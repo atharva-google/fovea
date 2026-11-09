@@ -40,7 +40,16 @@ def _make_bytetrack(frame_rate: int):
         from ultralytics.utils import yaml_load
 
         cfg = yaml_load(path)
-    return BYTETracker(args=IterableSimpleNamespace(**cfg), frame_rate=frame_rate)
+
+    import inspect
+
+    if "frame_rate" in inspect.signature(BYTETracker.__init__).parameters:  # older ultralytics
+        return BYTETracker(args=IterableSimpleNamespace(**cfg), frame_rate=frame_rate)
+    # Newer ultralytics dropped ``frame_rate`` and uses ``track_buffer`` as-is. Older versions kept
+    # lost tracks for ``track_buffer * frame_rate / 30`` frames, so apply that scaling here to keep
+    # the same behaviour (we track at fps / detect_every, not 30 fps).
+    cfg["track_buffer"] = max(1, int(frame_rate / 30.0 * cfg.get("track_buffer", 30)))
+    return BYTETracker(args=IterableSimpleNamespace(**cfg))
 
 
 class PersonTracker:
