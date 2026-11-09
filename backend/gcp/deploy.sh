@@ -163,8 +163,18 @@ for name in fovea-api fovea-worker fovea-workflow; do
   gcloud iam service-accounts describe "$name@$PROJECT_ID.iam.gserviceaccount.com" $G >/dev/null 2>&1 || \
     gcloud iam service-accounts create "$name" --display-name="$name" $G
 done
-bucket_role()  { gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" --member="serviceAccount:$1" --role="$2" $G >/dev/null; }
-project_role() { gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:$1" --role="$2" --condition=None $G >/dev/null; }
+# New service accounts take a little while to be visible everywhere ("does not exist" errors),
+# so permission changes are retried for up to ~2 minutes.
+retry() {
+  local n
+  for n in 1 2 3 4 5 6 7 8; do
+    "$@" && return 0
+    [[ $n -lt 8 ]] && { warn "not ready yet, retrying in 15s ($n/8)"; sleep 15; }
+  done
+  return 1
+}
+bucket_role()  { retry gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" --member="serviceAccount:$1" --role="$2" $G >/dev/null; }
+project_role() { retry gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:$1" --role="$2" --condition=None $G >/dev/null; }
 bucket_role  "$API_SA"      roles/storage.objectAdmin
 bucket_role  "$WORKER_SA"   roles/storage.objectAdmin
 bucket_role  "$WORKFLOW_SA" roles/storage.objectViewer
@@ -173,9 +183,9 @@ project_role "$API_SA"      roles/workflows.invoker
 project_role "$WORKER_SA"   roles/datastore.user
 project_role "$WORKFLOW_SA" roles/run.developer      # run the worker job with per-step arguments
 project_role "$WORKFLOW_SA" roles/logging.logWriter
-gcloud iam service-accounts add-iam-policy-binding "$API_SA" --member="serviceAccount:$API_SA" \
+retry gcloud iam service-accounts add-iam-policy-binding "$API_SA" --member="serviceAccount:$API_SA" \
   --role=roles/iam.serviceAccountTokenCreator $G >/dev/null   # lets the API sign upload/download links
-gcloud iam service-accounts add-iam-policy-binding "$WORKER_SA" --member="serviceAccount:$WORKFLOW_SA" \
+retry gcloud iam service-accounts add-iam-policy-binding "$WORKER_SA" --member="serviceAccount:$WORKFLOW_SA" \
   --role=roles/iam.serviceAccountUser $G >/dev/null
 ok "permissions set"
 
