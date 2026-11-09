@@ -1,0 +1,17 @@
+.git
+.venv
+venv
+**/__pycache__
+*.pyc
+weights/*
+working/
+outputs/
+data/
+notebooks/
+frontend/
+backend/local.env
+backend/gcp/config.env
+*.mp4
+*.mov
+*.wav
+.DS_Store

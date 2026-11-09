@@ -1,0 +1,118 @@
+# Fovea pipeline on Google Cloud (Cloud Workflows). Deployed by deploy.sh.
+#
+#   split_steps = true (default, needs GPU quota >= 2):
+#       prep ──┬── visual (N parallel tasks) ── render ── "rendered"
+#              └── audio (if transcribe) ─────────────────────────── "complete"
+#   split_steps = false (GPU quota of 1):
+#       all steps in one task (audio in a background thread) ── "rendered" ── "complete"
+#
+# Every GPU step is one execution of the same Cloud Run Job ("fovea-worker") with
+# different arguments. Steps hand data to each other only through files in the bucket.
+
+main:
+  params: [args]
+  steps:
+    - init:
+        assign:
+          - project: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
+          - region: ${sys.get_env("GOOGLE_CLOUD_LOCATION")}
+          - job_name: ${"projects/" + project + "/locations/" + region + "/jobs/" + args.worker_job}
+
+    - pipeline:
+        try:
+          steps:
+            - choose_layout:
+                switch:
+                  - condition: ${args.split_steps}
+                    next: run_prep
+                next: run_all
+
+            # -------------------------------------------- one task does everything
+            - run_all:
+                call: run_step
+                args: {job_name: "${job_name}", step: "all", job_path: "${args.job_path}", tasks: 1}
+            - all_rendered:
+                call: notify
+                args: {api_url: "${args.api_url}", job_id: "${args.job_id}", event: "rendered", error: null}
+                next: complete
+
+            # -------------------------------------------- one task per step
+            - run_prep:
+                call: run_step
+                args: {job_name: "${job_name}", step: "prep", job_path: "${args.job_path}", tasks: 1}
+            - read_shards:
+                call: googleapis.storage.v1.objects.get
+                args:
+                  bucket: ${args.bucket}
+                  object: ${text.url_encode(args.job_path + "/prep/shards.json")}
+                  alt: media
+                result: shards
+            - analyze:
+                parallel:
+                  branches:
+                    - video_branch:
+                        steps:
+                          - run_visual:
+                              call: run_step
+                              args: {job_name: "${job_name}", step: "visual", job_path: "${args.job_path}", tasks: "${shards.num_shards}"}
+                          - run_render:
+                              call: run_step
+                              args: {job_name: "${job_name}", step: "render", job_path: "${args.job_path}", tasks: 1}
+                          - notify_rendered:
+                              call: notify
+                              args: {api_url: "${args.api_url}", job_id: "${args.job_id}", event: "rendered", error: null}
+                    - audio_branch:
+                        steps:
+                          - maybe_audio:
+                              switch:
+                                - condition: ${args.transcribe}
+                                  steps:
+                                    - run_audio:
+                                        call: run_step
+                                        args: {job_name: "${job_name}", step: "audio", job_path: "${args.job_path}", tasks: 1}
+
+            - complete:
+                call: notify
+                args: {api_url: "${args.api_url}", job_id: "${args.job_id}", event: "complete", error: null}
+        except:
+          as: e
+          steps:
+            - report_failure:
+                call: notify
+                args: {api_url: "${args.api_url}", job_id: "${args.job_id}", event: "failed", error: "${json.encode_to_string(e)}"}
+            - fail:
+                raise: ${e}
+
+# Run one execution of the worker job and wait until it finishes.
+run_step:
+  params: [job_name, step, job_path, tasks]
+  steps:
+    - run:
+        call: googleapis.run.v2.projects.locations.jobs.run
+        args:
+          name: ${job_name}
+          body:
+            overrides:
+              containerOverrides:
+                - args: ["--step", "${step}", "--job-path", "${job_path}"]
+              taskCount: ${tasks}
+          connector_params:
+            timeout: 7200
+        result: execution
+    - done:
+        return: ${execution}
+
+# Tell the API about job-level changes (it also starts the next queued job).
+notify:
+  params: [api_url, job_id, event, error]
+  steps:
+    - post:
+        call: http.post
+        args:
+          url: ${api_url + "/internal/jobs/" + job_id + "/events"}
+          auth:
+            type: OIDC
+            audience: ${api_url}
+          body:
+            event: ${event}
+            error: ${error}

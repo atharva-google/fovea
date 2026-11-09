@@ -1,0 +1,31 @@
+# Model weights (downloaded on demand, never committed)
+weights/*
+!weights/README.md
+
+# Pipeline intermediates and results
+working/
+outputs/
+data/
+
+# Settings with secrets
+backend/local.env
+backend/gcp/config.env
+
+# Media
+*.mp4
+*.mov
+*.mkv
+*.wav
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# Notebooks / OS
+.ipynb_checkpoints/
+.DS_Store

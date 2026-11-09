@@ -1,0 +1,10 @@
+# Backend dependencies (on top of the root requirements.txt, which the worker needs)
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2
+# Google Cloud (only imported when MODE=gcp)
+google-auth>=2.29
+requests
+google-cloud-storage>=2.16
+google-cloud-firestore>=2.16
+google-cloud-workflows>=1.14

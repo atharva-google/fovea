@@ -1,0 +1,18 @@
+# Core (torch is preinstalled on Colab; locally install it from https://pytorch.org first)
+numpy
+pandas
+scipy
+opencv-python
+torch
+ultralytics>=8.4.0
+lapx
+scenedetect
+mediapipe
+easyocr
+python_speech_features
+gdown
+huggingface_hub
+
+# Optional: only needed for --transcribe
+faster-whisper
+demucs
