@@ -100,7 +100,8 @@ set -a; source "$CONFIG"; set +a
 : "${PROJECT_ID:?missing in config.env}" "${REGION:?missing in config.env}" "${BUCKET:?missing in config.env}"
 
 G="--project=$PROJECT_ID --quiet"
-TAG="$(date +%Y%m%d-%H%M%S)"
+# IMAGE_TAG=<tag> ./backend/gcp/deploy.sh  reuses images from an earlier build (skips step 5's rebuild).
+TAG="${IMAGE_TAG:-$(date +%Y%m%d-%H%M%S)}"
 AR_REPO=fovea
 API_SERVICE=fovea-api
 WORKER_JOB=fovea-worker
@@ -199,13 +200,20 @@ BUILD_SA="$PROJECT_NUMBER-compute@developer.gserviceaccount.com"
 for role in roles/artifactregistry.writer roles/logging.logWriter roles/storage.objectViewer; do
   project_role "$BUILD_SA" "$role"
 done
-gcloud builds submit --config backend/gcp/cloudbuild.yaml \
-  --substitutions="_API_IMAGE=$API_IMAGE,_WORKER_IMAGE=$WORKER_IMAGE,_HF_REPO=${HF_REPO:-}" $G .
-ok "images built"
+if [[ -n "${IMAGE_TAG:-}" ]] && gcloud artifacts docker images describe "$API_IMAGE" $G >/dev/null 2>&1 \
+   && gcloud artifacts docker images describe "$WORKER_IMAGE" $G >/dev/null 2>&1; then
+  ok "reusing existing images with tag $TAG"
+else
+  [[ -n "${IMAGE_TAG:-}" ]] && warn "no images with tag $TAG found; building new ones"
+  gcloud builds submit --config backend/gcp/cloudbuild.yaml \
+    --substitutions="_API_IMAGE=$API_IMAGE,_WORKER_IMAGE=$WORKER_IMAGE,_HF_REPO=${HF_REPO:-}" $G .
+  ok "images built"
+fi
 
 step 6 "GPU worker job ($WORKER_JOB)"
+# Cloud Run jobs can't get GPUs with zonal redundancy, so it must be turned off.
 gcloud beta run jobs deploy "$WORKER_JOB" --image="$WORKER_IMAGE" --region="$REGION" \
-  --service-account="$WORKER_SA" --gpu=1 --gpu-type="${GPU_TYPE:-nvidia-l4}" \
+  --service-account="$WORKER_SA" --gpu=1 --gpu-type="${GPU_TYPE:-nvidia-l4}" --no-gpu-zonal-redundancy \
   --cpu="${WORKER_CPU:-8}" --memory="${WORKER_MEMORY:-32Gi}" \
   --task-timeout="${TASK_TIMEOUT:-30m}" --max-retries=1 --tasks=1 \
   --set-env-vars="MODE=gcp,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,BUCKET=$BUCKET" $G
