@@ -88,6 +88,7 @@ class PipelineConfig:
 
     # --------------------------------------------- active speaker (TalkNet)
     enable_speaker_detection: bool = True
+    talknet_batch_frames: int = 1200  # video frames per TalkNet GPU pass (lower if the GPU runs out of memory)
 
     # ------------------------------ audio branch (runs in parallel, not used for framing)
     transcribe: bool = False  # Demucs vocals split + faster-whisper transcript
@@ -117,6 +118,7 @@ class PipelineConfig:
             raise ValueError("face_backend must be 'mediapipe' or 'pose'")
         self.detect_every = max(1, int(self.detect_every))
         self.max_shards = max(1, int(self.max_shards))
+        self.talknet_batch_frames = max(150, int(self.talknet_batch_frames))  # >= one 6 s window
 
     # ------------------------------------------------------------ helpers
     def update(self, overrides: Dict[str, Any]) -> "PipelineConfig":

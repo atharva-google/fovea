@@ -16,6 +16,7 @@ Persons without a detectable face are dropped (same as the original notebook).
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import cv2
@@ -74,6 +75,7 @@ class PersonTracker:
         self.face_backend = face_backend
         self.frame_rate = max(1, int(round(fps / max(1, detect_every))))
         self.tracker = None
+        self.seconds = {"yolo": 0.0, "faces": 0.0, "bytetrack": 0.0}  # time spent, for logs
 
         self.face_detector = None
         if face_backend == "mediapipe":
@@ -95,12 +97,16 @@ class PersonTracker:
         """Detect + track a batch of consecutive (detected) frames of the current shot."""
         if not batch:
             return {}
+        t0 = time.perf_counter()
         results = self.model.predict(
             source=[img for _, img in batch], conf=self.conf, iou=self.iou,
             half=self.half, device=self.device, verbose=False,
         )
+        t1 = time.perf_counter()
+        self.seconds["yolo"] += t1 - t0
 
         out: FrameTracks = {}
+        faces_s = 0.0
         for (frame_idx, img), res in zip(batch, results):
             det = res.boxes.cpu().numpy()
             current: List[Dict[str, Any]] = []
@@ -113,12 +119,16 @@ class PersonTracker:
                     tid, score, cls_id, det_idx = int(t[4]), float(t[5]), int(t[6]), int(t[7])
                     cname = res.names[cls_id]
                     if cname == "person":
+                        f0 = time.perf_counter()
                         d = self._person(img, tid, box, score, kpts[det_idx] if kpts is not None else None)
+                        faces_s += time.perf_counter() - f0
                         if d is not None:
                             current.append(d)
                     else:
                         current.append({"track_id": tid, "bbox": box, "conf": score, "cname": cname})
             out[frame_idx] = current
+        self.seconds["faces"] += faces_s
+        self.seconds["bytetrack"] += time.perf_counter() - t1 - faces_s
         return out
 
     # ------------------------------------------------------------- faces
