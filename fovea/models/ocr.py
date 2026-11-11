@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
-from typing import Any, Dict, List, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import cv2
 import numpy as np
@@ -42,7 +42,7 @@ class TextReader:
         self._lock = threading.Lock() if serialize else nullcontext()
 
     def read_shots(self, video_path: str, shots: Sequence[Dict[str, Any]], samples_per_shot: int = 1,
-                   workers: int = 2) -> List[Dict[str, Any]]:
+                   workers: int = 2, on_shot: Optional[Callable[[], None]] = None) -> List[Dict[str, Any]]:
         """OCR several shots at once: a thread pool, each thread with its own video reader.
 
         Only the sampled frame(s) of each shot are decoded. Records come back in shot order.
@@ -53,7 +53,10 @@ class TextReader:
             reader = readers.get()
             idxs = sample_frame_indices(int(shot["start_frame"]), int(shot["end_frame"]), samples_per_shot)
             frames = [f for f in (reader.frame(i) for i in idxs) if f is not None]
-            return self.read_shot(shot, frames) if frames else []
+            records = self.read_shot(shot, frames) if frames else []
+            if on_shot:
+                on_shot()
+            return records
 
         try:
             with ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="ocr") as pool:

@@ -33,6 +33,8 @@ class LocalRunner:
 
     @staticmethod
     def _run(job_id: str, prefix: str) -> None:
+        # importing the pipeline (torch, ultralytics, ...) takes a while on the first job
+        get_jobs().update(job_id, {"steps.prep.stage": {"name": "loading libraries", "index": 0, "count": 2}})
         from .worker import run_job
 
         try:

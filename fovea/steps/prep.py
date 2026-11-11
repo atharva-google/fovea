@@ -15,17 +15,19 @@ from __future__ import annotations
 import math
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
 from ..config import PipelineConfig
 from ..utils.jobdir import JobDir
+from ..utils.progress import Progress, noop
 from ..utils.video import extract_audio, has_audio_stream, make_proxy, make_silent_audio, probe_video
 
 
-def run(job: JobDir, cfg: PipelineConfig, log=print) -> int:
+def run(job: JobDir, cfg: PipelineConfig, log=print, progress: Optional[Progress] = None) -> int:
     """Returns the number of shards."""
+    progress = progress or noop
     if job.shards.exists() and not cfg.force:
         log("  prep already done, skipping")
         return job.read_json(job.shards)["num_shards"]
@@ -37,6 +39,7 @@ def run(job: JobDir, cfg: PipelineConfig, log=print) -> int:
         raise ValueError(f"Video is {src.duration:.0f}s long; the limit is {cfg.max_duration_s:.0f}s")
 
     t = time.time()
+    progress("proxy + audio", index=1, count=2)
     # The proxy encode and the audio extraction are independent ffmpeg runs: do them at the same time.
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="prep") as pool:
         proxy_job = pool.submit(make_proxy, source, job.proxy, cfg.proxy_height, cfg.proxy_fps, cfg.use_gpu_video)
@@ -50,6 +53,7 @@ def run(job: JobDir, cfg: PipelineConfig, log=print) -> int:
     proxy = probe_video(job.proxy)
     log(f"  proxy {proxy.width}x{proxy.height} @ {proxy.fps:.0f}fps ({time.time() - t:.1f}s)")
 
+    progress("shot detection", index=2, count=2)
     shots = detect_shots(str(job.proxy), cfg.shot_threshold)
     shots.to_csv(job.shots, index=False)
     shards = plan_shards(shots, cfg.max_shards, cfg.min_frames_per_shard)

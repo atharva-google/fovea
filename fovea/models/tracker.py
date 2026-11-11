@@ -26,7 +26,7 @@ import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -96,10 +96,12 @@ class PersonTracker:
 
     # ------------------------------------------------------------- public API
     def track_shots(self, video_path: str, shots: Sequence[Dict[str, Any]], batch_size: int = 16,
-                    decoders: int = 2, face_workers: int = 2, max_pending_faces: int = 512) -> ShotTracks:
+                    decoders: int = 2, face_workers: int = 2, max_pending_faces: int = 512,
+                    on_frames: Optional[Callable[[int], None]] = None) -> ShotTracks:
         """Detect + track every shot in ``shots`` (dicts with shot_id/start_frame/end_frame).
 
         Returns RAW tracks (only detected frames); see ``fill_skipped_frames``.
+        ``on_frames(n)`` is called after every YOLO batch with the number of frames it held.
         """
         shots = sorted(shots, key=lambda s: int(s["start_frame"]))
         raw: Dict[int, Dict[int, list]] = {int(s["shot_id"]): {} for s in shots}
@@ -168,9 +170,13 @@ class PersonTracker:
                 batch.append(item)
                 if len(batch) >= batch_size:
                     self._process_batch(batch, bytetracks, raw, face_pool, pending, max_pending_faces)
+                    if on_frames:
+                        on_frames(len(batch))
                     batch = []
             if batch:
                 self._process_batch(batch, bytetracks, raw, face_pool, pending, max_pending_faces)
+                if on_frames:
+                    on_frames(len(batch))
             t0 = time.perf_counter()
             result = {sid: {idx: _resolve(entries) for idx, entries in frames.items()} for sid, frames in raw.items()}
             self.seconds["faces_wait"] += time.perf_counter() - t0

@@ -22,7 +22,7 @@ from __future__ import annotations
 import pickle
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Dict, Iterable, Iterator, List
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional
 
 import pandas as pd
 
@@ -32,12 +32,14 @@ from ..models.ocr import TextReader
 from ..models.tracker import PersonTracker, ShotTracks, fill_skipped_frames
 from ..utils.device import clean_gpu_memory
 from ..utils.jobdir import JobDir
+from ..utils.progress import Counter, Progress, noop
 from ..utils.timing import Timings
 from ..utils.video import ThreadLocalReaders, auto_workers
 from ..utils.weights import ensure_for
 
 
-def run(job: JobDir, cfg: PipelineConfig, device: str, shard: int, log=print) -> None:
+def run(job: JobDir, cfg: PipelineConfig, device: str, shard: int, log=print,
+        progress: Optional[Progress] = None) -> None:
     out = job.shard_result(shard)
     if out.exists() and not cfg.force:
         log(f"  shard {shard} already done, skipping")
@@ -49,7 +51,7 @@ def run(job: JobDir, cfg: PipelineConfig, device: str, shard: int, log=print) ->
     shots = shots[shots["shot_id"].isin(plan["shot_ids"])]
 
     result = analyze_shard(str(job.proxy), str(job.audio), shots, proxy.width, proxy.height, proxy.fps,
-                           cfg, device, log)
+                           cfg, device, log, progress)
     tmp = out.with_suffix(".tmp")
     with open(tmp, "wb") as f:
         pickle.dump(result, f)
@@ -57,7 +59,9 @@ def run(job: JobDir, cfg: PipelineConfig, device: str, shard: int, log=print) ->
 
 
 def analyze_shard(proxy_path: str, audio_path: str, shots_df: pd.DataFrame, proxy_w: int, proxy_h: int,
-                  fps: float, cfg: PipelineConfig, device: str, log=print) -> Dict[str, Any]:
+                  fps: float, cfg: PipelineConfig, device: str, log=print,
+                  progress: Optional[Progress] = None) -> Dict[str, Any]:
+    """``progress(stage, done=, total=, unit=, index=, count=)`` is called as each stage advances."""
     shots = [s for s in shots_df.sort_values("start_frame").to_dict("records")
              if int(s["end_frame"]) > int(s["start_frame"])]
     if not shots:
@@ -69,17 +73,27 @@ def analyze_shard(proxy_path: str, audio_path: str, shots_df: pd.DataFrame, prox
     ocr_workers = auto_workers(cfg.ocr_workers)
     motion_workers = auto_workers(cfg.motion_workers, cap=8)
     log(f"  {len(shots)} shots | workers: visual={workers} ocr={ocr_workers} motion={motion_workers}")
+    progress = progress or noop
+    stages = ["tracking"] + (["speakers"] if cfg.enable_speaker_detection else []) \
+        + (["ocr"] if cfg.enable_ocr else []) + (["motion"] if cfg.enable_motion else [])
+
+    def counter(stage: str, total: int, unit: str) -> Counter:
+        return Counter(progress, stage, total, unit, stages.index(stage) + 1, len(stages))
 
     # ---- 1. tracking
     with _stage("1/4 tracking", timings, log):
-        tracks = _track(proxy_path, shots, fps, cfg, device, workers, timings)
+        every = cfg.detect_every
+        n_detect = sum(-(-(int(s["end_frame"]) - int(s["start_frame"])) // every) for s in shots)
+        tracks = _track(proxy_path, shots, fps, cfg, device, workers, timings,
+                        counter("tracking", n_detect, "frames").add)
         log(f"    {sum(1 for t in tracks.values() for d in t.values() if d)} frames with people")
 
     # ---- 2. active speaker detection
     speaker_scores: List[Dict[str, Any]] = []
     if cfg.enable_speaker_detection:
         with _stage("2/4 speakers", timings, log):
-            speaker_scores = _score_speakers(proxy_path, audio_path, shots, tracks, cfg, device, workers, timings)
+            speaker_scores = _score_speakers(proxy_path, audio_path, shots, tracks, cfg, device, workers, timings,
+                                             counter("speakers", len(shots), "shots").add)
             log(f"    scored {len(speaker_scores)} face tracks")
 
     # ---- 3. OCR
@@ -89,7 +103,8 @@ def analyze_shard(proxy_path: str, audio_path: str, shots_df: pd.DataFrame, prox
             with timings("ocr_load"):
                 reader = TextReader(str(ensure_for(cfg, "easyocr")), device, cfg.ocr_langs,
                                     serialize=cfg.ocr_serialize)
-            ocr_records = reader.read_shots(proxy_path, shots, cfg.ocr_samples_per_shot, ocr_workers)
+            ocr_records = reader.read_shots(proxy_path, shots, cfg.ocr_samples_per_shot, ocr_workers,
+                                            counter("ocr", len(shots), "shots").add)
             del reader
             clean_gpu_memory()
             log(f"    {len(ocr_records)} text items")
@@ -98,7 +113,9 @@ def analyze_shard(proxy_path: str, audio_path: str, shots_df: pd.DataFrame, prox
     motion_res: Dict[int, Dict[str, float]] = {}
     if cfg.enable_motion:
         with _stage("4/4 motion", timings, log):
-            motion_res = analyze_motion(proxy_path, shots, proxy_w, proxy_h, cfg.motion_scale, motion_workers)
+            n_frames = sum(int(s["end_frame"]) - int(s["start_frame"]) for s in shots)
+            motion_res = analyze_motion(proxy_path, shots, proxy_w, proxy_h, cfg.motion_scale, motion_workers,
+                                        counter("motion", n_frames, "frames").add)
             log(f"    {len(motion_res)} motion frames")
 
     total = time.perf_counter() - t_start
@@ -127,7 +144,7 @@ class _stage:
 
 # --------------------------------------------------------------------------- 1. tracking
 def _track(proxy_path: str, shots: List[Dict[str, Any]], fps: float, cfg: PipelineConfig, device: str,
-           workers: int, timings: Timings) -> ShotTracks:
+           workers: int, timings: Timings, on_frames: Optional[Callable[[int], None]] = None) -> ShotTracks:
     with timings("tracker_load"):
         if cfg.face_backend == "pose":
             tracker = PersonTracker(str(ensure_for(cfg, "yolo_pose")), device, fps, "pose",
@@ -138,7 +155,7 @@ def _track(proxy_path: str, shots: List[Dict[str, Any]], fps: float, cfg: Pipeli
                                     iou=cfg.yolo_iou, face_min_conf=cfg.face_min_conf, detect_every=cfg.detect_every)
     try:
         raw = tracker.track_shots(proxy_path, shots, batch_size=cfg.detect_batch, decoders=workers,
-                                  face_workers=workers)
+                                  face_workers=workers, on_frames=on_frames)
     finally:
         for name, secs in tracker.seconds.items():
             timings.add(name, secs)
@@ -155,7 +172,8 @@ def _track(proxy_path: str, shots: List[Dict[str, Any]], fps: float, cfg: Pipeli
 
 # --------------------------------------------------------------------------- 2. speakers
 def _score_speakers(proxy_path: str, audio_path: str, shots: List[Dict[str, Any]], tracks: ShotTracks,
-                    cfg: PipelineConfig, device: str, workers: int, timings: Timings) -> List[Dict[str, Any]]:
+                    cfg: PipelineConfig, device: str, workers: int, timings: Timings,
+                    on_shot: Optional[Callable[[], None]] = None) -> List[Dict[str, Any]]:
     """Face crops for many shots at once (thread pool), scored by TalkNet in large GPU batches.
 
     Crops are scored once ``talknet_batch_frames * 8`` face frames are waiting, so memory stays
@@ -195,6 +213,8 @@ def _score_speakers(proxy_path: str, audio_path: str, shots: List[Dict[str, Any]
             for inputs in _bounded_map(pool, crops, shots, window=workers * 2):
                 pending.extend(inputs)
                 pending_frames += sum(len(t["frames"]) for t in inputs)
+                if on_shot:
+                    on_shot()
                 if pending_frames >= flush_frames:
                     score()
         score()

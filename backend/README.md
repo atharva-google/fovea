@@ -92,6 +92,14 @@ The browser sends the file to `upload.url`, using `upload.method` and `upload.he
 ```
 `status` is one of: `awaiting_upload` → `queued` → `running` → `rendered` → `complete`, or `failed`.
 
+While a step runs, `steps.<step>.stage` shows its current stage (refreshed every ~2 s). Finished stages go into `steps.<step>.stage_times` (seconds):
+```json
+"visual": {"status": "running",
+           "stage": {"name": "ocr", "index": 3, "count": 4, "done": 40, "total": 120, "unit": "shots", "elapsed_s": 6.2},
+           "stage_times": {"tracking": 31.4, "speakers": 12.0}}
+```
+Stages: prep = `proxy + audio`, `shot detection`; visual = `tracking`, `speakers`, `ocr`, `motion`; render = `focal points`, `encode <label>` (one per target).
+
 **Also available:**
 - `GET /v1/jobs?user_id=`: list a user's jobs
 - `DELETE /v1/jobs/{id}?user_id=`: delete a finished job's files

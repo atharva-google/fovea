@@ -10,24 +10,90 @@ Every step is:  copy inputs from storage  ->  fovea.steps.<step>.run()  ->  copy
 from __future__ import annotations
 
 import os
+import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict, Optional
 
 from fovea import steps
 from fovea.config import PipelineConfig
 from fovea.utils.device import get_device
 from fovea.utils.jobdir import JobDir, step_files
 
-from .jobs import step_event
+from .jobs import get_jobs, step_event
 from .settings import get_settings
 from .storage import get_storage
 
 
 def log(msg: str) -> None:
     print(msg, flush=True)
+
+
+class StageReporter:
+    """Progress callback for ``fovea.steps.*.run(progress=...)``.
+
+    Writes the step's current stage into the job record, e.g.::
+
+        steps.visual.stage       = {"name": "ocr", "index": 3, "count": 4, "done": 40, "total": 120,
+                                    "unit": "shots", "elapsed_s": 6.2, "shard": 0}
+        steps.visual.stage_times = {"tracking": 31.4, "speakers": 12.0}   # finished stages, seconds
+
+    Stage changes are written (and logged) at once; counter updates at most every ``min_interval`` s.
+    """
+
+    def __init__(self, job_id: str, step: str, shard: Optional[int] = None, min_interval: float = 2.0):
+        self.job_id, self.step, self.shard, self.min_interval = job_id, step, shard, min_interval
+        self.prefix = f"shard{shard}/" if shard else ""  # keep stage times of parallel shards apart
+        self.stage: Optional[str] = None
+        self.t_stage = self.t_write = 0.0
+        self.times: Dict[str, float] = {}
+        self.lock = threading.Lock()
+
+    def __call__(self, stage: str, done: Optional[int] = None, total: Optional[int] = None,
+                 unit: Optional[str] = None, index: Optional[int] = None, count: Optional[int] = None) -> None:
+        with self.lock:
+            now_t = time.monotonic()
+            if stage != self.stage:
+                self._close_stage(now_t)
+                self.stage, self.t_stage = stage, now_t
+                pos = f" {index}/{count}" if index and count else ""
+                log(f"  [{self.step}{'' if self.shard is None else f' shard {self.shard}'}] stage{pos}: {stage}")
+            elif now_t - self.t_write < self.min_interval and not (total and done is not None and done >= total):
+                return
+            self.t_write = now_t
+            info: Dict[str, Any] = {"name": stage, "index": index, "count": count, "done": done, "total": total,
+                                    "unit": unit, "elapsed_s": round(now_t - self.t_stage, 1)}
+            if self.shard is not None:
+                info["shard"] = self.shard
+            self._write({f"steps.{self.step}.stage": info, f"steps.{self.step}.stage_times": dict(self.times)})
+
+    def finish(self) -> None:
+        with self.lock:
+            self._close_stage(time.monotonic())
+            self.stage = None
+            self._write({f"steps.{self.step}.stage": None, f"steps.{self.step}.stage_times": dict(self.times)})
+
+    def _close_stage(self, now_t: float) -> None:
+        if self.stage is not None:
+            secs = round(now_t - self.t_stage, 1)
+            self.times[self.prefix + self.stage] = secs
+            log(f"  [{self.step}] ✓ {self.stage} ({secs:.1f}s)")
+
+    def _write(self, fields: Dict[str, Any]) -> None:
+        try:
+            get_jobs().update(self.job_id, fields)
+        except Exception as e:  # noqa: BLE001 - progress must never break the pipeline
+            log(f"  (could not record progress: {e})")
+
+
+def _run_with_stages(job_id: str, step: str, fn, *args, shard: Optional[int] = None, **kwargs):
+    reporter = StageReporter(job_id, step, shard)
+    try:
+        return fn(*args, progress=reporter, **kwargs)
+    finally:
+        reporter.finish()
 
 
 def _job_id(prefix: str) -> str:
@@ -64,14 +130,14 @@ def run_step(step: str, prefix: str, shard: int = 0) -> None:
 
     extra: Dict = {}
     if step == "prep":
-        n = steps.prep.run(job, cfg, log)
+        n = _run_with_stages(job_id, "prep", steps.prep.run, job, cfg, log)
         extra = {"num_shards": n, "steps.visual.total": n}
     elif step == "visual":
-        steps.visual.run(job, cfg, device, shard, log)
+        _run_with_stages(job_id, "visual", steps.visual.run, job, cfg, device, shard, log, shard=shard)
     elif step == "audio":
         steps.audio.run(job, cfg, device, log)
     elif step == "render":
-        extra = _outputs_field(steps.render.run(job, cfg, log))
+        extra = _outputs_field(_run_with_stages(job_id, "render", steps.render.run, job, cfg, log))
     else:
         raise ValueError(f"Unknown step {step}")
 
@@ -89,7 +155,7 @@ def run_job(prefix: str, on_rendered=None) -> None:
     cfg, device = _config(job), get_device()
 
     step_event(job_id, "prep", "running")
-    n = steps.prep.run(job, cfg, log)
+    n = _run_with_stages(job_id, "prep", steps.prep.run, job, cfg, log)
     _sync("up", prefix, job, ["prep/"])
     step_event(job_id, "prep", "done", extra={"num_shards": n, "steps.visual.total": n})
 
@@ -101,13 +167,13 @@ def run_job(prefix: str, on_rendered=None) -> None:
 
     step_event(job_id, "visual", "running")
     for i in range(n):
-        steps.visual.run(job, cfg, device, i, log)
+        _run_with_stages(job_id, "visual", steps.visual.run, job, cfg, device, i, log, shard=i if n > 1 else None)
         step_event(job_id, "visual", "done", shard=i)
     _sync("up", prefix, job, ["visual/"])
     step_event(job_id, "visual", "done")
 
     step_event(job_id, "render", "running")
-    rendered = steps.render.run(job, cfg, log)
+    rendered = _run_with_stages(job_id, "render", steps.render.run, job, cfg, log)
     _sync("up", prefix, job, ["framing/", "outputs/", "debug/"])
     step_event(job_id, "render", "done", extra=_outputs_field(rendered))
     if on_rendered:

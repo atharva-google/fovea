@@ -7,7 +7,7 @@ Incremental: call :meth:`MotionAnalyzer.reset` at each shot start and
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import cv2
 import numpy as np
@@ -65,7 +65,8 @@ class MotionAnalyzer:
 
 
 def analyze_shots(video_path: str, shots: Sequence[Dict[str, Any]], width: int, height: int,
-                  scale: float = 0.5, workers: int = 2) -> MotionResults:
+                  scale: float = 0.5, workers: int = 2,
+                  on_frames: Optional[Callable[[int], None]] = None) -> MotionResults:
     """Motion saliency for many shots at once.
 
     Shots are split into runs of consecutive shots; a thread pool processes the runs, each task
@@ -83,8 +84,12 @@ def analyze_shots(video_path: str, shots: Sequence[Dict[str, Any]], width: int, 
         try:
             for shot in group:
                 analyzer.reset()
+                n = 0
                 for idx, frame in reader.frames(int(shot["start_frame"]), int(shot["end_frame"])):
                     out[idx] = analyzer.update(frame)
+                    n += 1
+                if on_frames:
+                    on_frames(n)
         finally:
             reader.close()
         return out
