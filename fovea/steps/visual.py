@@ -1,13 +1,17 @@
 """STEP 2 - visual: understand what's on screen, for one shard (group of shots).
 
-Each proxy frame is decoded ONCE (in a background thread) and handed to:
-  * motion saliency  (every frame, downscaled)          -> models/motion.py
-  * person + face tracker  (every Nth frame, batched)    -> models/tracker.py
-  * OCR  (a few sampled frames per shot)                 -> models/ocr.py
-Then TalkNet scores which face is speaking               -> models/speakers.py, models/talknet/
-  This runs in a second thread NEXT TO tracking: as soon as a shot is tracked it is handed
-  over, so speaker scoring of earlier shots overlaps with tracking of later ones, and face
-  tracks from several shots are scored together in large GPU batches.
+The shard is processed STAGE BY STAGE. Each stage works on many shots at the same time and
+finishes all of them before the next stage starts; its GPU model is freed before the next loads:
+
+  1. tracking   person + face tracker (YOLO + ByteTrack + face)   -> models/tracker.py
+                several decoder threads, each on a different run of shots, feed ONE shared YOLO
+                model with batches that mix shots; detections go to a ByteTrack per shot
+  2. speakers   TalkNet active speaker scores                      -> models/speakers.py, models/talknet/
+                face crops built by a thread pool (one reader per thread), scored in big GPU batches
+  3. OCR        on-screen text on a few sampled frames per shot    -> models/ocr.py
+                thread pool over shots, one shared EasyOCR model
+  4. motion     frame-difference motion saliency                   -> models/motion.py
+                thread pool over runs of shots (CPU)
 
 Reads:  prep/*
 Writes: visual/shard_<i>.pkl   (several shards can run in parallel on different GPUs)
@@ -17,19 +21,19 @@ from __future__ import annotations
 
 import pickle
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable, Dict, Iterable, Iterator, List
 
 import pandas as pd
 
 from ..config import PipelineConfig
-from ..models.motion import MotionAnalyzer
-from ..models.ocr import TextReader, sample_frame_indices
+from ..models.motion import analyze_shots as analyze_motion
+from ..models.ocr import TextReader
 from ..models.tracker import PersonTracker, ShotTracks, fill_skipped_frames
 from ..utils.device import clean_gpu_memory
 from ..utils.jobdir import JobDir
 from ..utils.timing import Timings
-from ..utils.video import iter_frames
+from ..utils.video import ThreadLocalReaders, auto_workers
 from ..utils.weights import ensure_for
 
 
@@ -61,9 +65,70 @@ def analyze_shard(proxy_path: str, audio_path: str, shots_df: pd.DataFrame, prox
 
     timings = Timings()
     t_start = time.perf_counter()
+    workers = auto_workers(cfg.visual_workers)
+    ocr_workers = auto_workers(cfg.ocr_workers)
+    motion_workers = auto_workers(cfg.motion_workers, cap=8)
+    log(f"  {len(shots)} shots | workers: visual={workers} ocr={ocr_workers} motion={motion_workers}")
 
-    # ---- load models
-    with timings("load_models"):
+    # ---- 1. tracking
+    with _stage("1/4 tracking", timings, log):
+        tracks = _track(proxy_path, shots, fps, cfg, device, workers, timings)
+        log(f"    {sum(1 for t in tracks.values() for d in t.values() if d)} frames with people")
+
+    # ---- 2. active speaker detection
+    speaker_scores: List[Dict[str, Any]] = []
+    if cfg.enable_speaker_detection:
+        with _stage("2/4 speakers", timings, log):
+            speaker_scores = _score_speakers(proxy_path, audio_path, shots, tracks, cfg, device, workers, timings)
+            log(f"    scored {len(speaker_scores)} face tracks")
+
+    # ---- 3. OCR
+    ocr_records: List[Dict[str, Any]] = []
+    if cfg.enable_ocr:
+        with _stage("3/4 ocr", timings, log):
+            with timings("ocr_load"):
+                reader = TextReader(str(ensure_for(cfg, "easyocr")), device, cfg.ocr_langs,
+                                    serialize=cfg.ocr_serialize)
+            ocr_records = reader.read_shots(proxy_path, shots, cfg.ocr_samples_per_shot, ocr_workers)
+            del reader
+            clean_gpu_memory()
+            log(f"    {len(ocr_records)} text items")
+
+    # ---- 4. motion
+    motion_res: Dict[int, Dict[str, float]] = {}
+    if cfg.enable_motion:
+        with _stage("4/4 motion", timings, log):
+            motion_res = analyze_motion(proxy_path, shots, proxy_w, proxy_h, cfg.motion_scale, motion_workers)
+            log(f"    {len(motion_res)} motion frames")
+
+    total = time.perf_counter() - t_start
+    log(f"  visual timings ({total:.1f}s total; per-part times inside a stage overlap): {timings.summary()}")
+    return {"tracks": tracks, "motion": motion_res, "ocr": ocr_records, "speaker_scores": speaker_scores,
+            "timings": {**timings.as_dict(), "total": round(total, 2)}}
+
+
+class _stage:
+    """``with _stage("1/4 tracking", timings, log):`` -> logs and records the stage's wall time."""
+
+    def __init__(self, name: str, timings: Timings, log):
+        self.name, self.timings, self.log = name, timings, log
+
+    def __enter__(self):
+        self.t0 = time.perf_counter()
+        return self
+
+    def __exit__(self, *exc):
+        secs = time.perf_counter() - self.t0
+        self.timings.add(f"stage_{self.name.split(' ', 1)[1]}", secs)
+        if exc[0] is None:
+            self.log(f"  ✓ {self.name} ({secs:.1f}s)")
+        return False
+
+
+# --------------------------------------------------------------------------- 1. tracking
+def _track(proxy_path: str, shots: List[Dict[str, Any]], fps: float, cfg: PipelineConfig, device: str,
+           workers: int, timings: Timings) -> ShotTracks:
+    with timings("tracker_load"):
         if cfg.face_backend == "pose":
             tracker = PersonTracker(str(ensure_for(cfg, "yolo_pose")), device, fps, "pose",
                                     conf=cfg.yolo_conf, iou=cfg.yolo_iou, detect_every=cfg.detect_every)
@@ -71,182 +136,86 @@ def analyze_shard(proxy_path: str, audio_path: str, shots_df: pd.DataFrame, prox
             tracker = PersonTracker(str(ensure_for(cfg, "yolo")), device, fps, "mediapipe",
                                     face_model_path=str(ensure_for(cfg, "blazeface")), conf=cfg.yolo_conf,
                                     iou=cfg.yolo_iou, face_min_conf=cfg.face_min_conf, detect_every=cfg.detect_every)
-        motion = MotionAnalyzer(proxy_w, proxy_h, scale=cfg.motion_scale) if cfg.enable_motion else None
-        reader = TextReader(str(ensure_for(cfg, "easyocr")), device, cfg.ocr_langs) if cfg.enable_ocr else None
-    # Speaker detection runs NEXT TO tracking: each finished shot is handed to a background
-    # thread, which scores it while the main loop tracks the following shots.
-    speakers = (SpeakerScorer(proxy_path, audio_path, cfg, device, timings, log)
-                if cfg.enable_speaker_detection else None)
-
-    tracks: ShotTracks = {}
-    motion_res: Dict[int, Dict[str, float]] = {}
-    ocr_records: List[Dict[str, Any]] = []
-
-    # ---- per-shot state
-    shot_i = -1
-    shot: Optional[Dict[str, Any]] = None
-    batch: list = []
-    shot_frames: Dict[int, list] = {}
-    ocr_targets: set = set()
-    ocr_frames: list = []
-
-    def flush():
-        if batch:
-            shot_frames.update(tracker.process_batch(batch))
-            batch.clear()
-
-    def finish_shot():
-        if shot is None:
-            return
-        flush()
-        sid, s0, s1 = int(shot["shot_id"]), int(shot["start_frame"]), int(shot["end_frame"])
-        tracks[sid] = fill_skipped_frames(shot_frames, s0, s1) if cfg.detect_every > 1 else dict(shot_frames)
-        if reader is not None and ocr_frames:
-            with timings("ocr"):
-                ocr_records.extend(reader.read_shot(shot, ocr_frames))
-        if speakers is not None:
-            speakers.add_shot(sid, s0, s1, tracks[sid])
-
-    # ---- the single decode loop
-    frames = timings.timed_iter("decode_wait", iter_frames(proxy_path, int(shots[0]["start_frame"]),
-                                                           int(shots[-1]["end_frame"])))
     try:
-        for idx, frame in frames:
-            while shot is None or idx >= int(shot["end_frame"]):  # moved into the next shot?
-                finish_shot()
-                shot_i += 1
-                if shot_i >= len(shots):
-                    shot = None
-                    break
-                shot = shots[shot_i]
-                tracker.new_shot()
-                if motion is not None:
-                    motion.reset()
-                shot_frames, ocr_frames = {}, []
-                ocr_targets = set(sample_frame_indices(int(shot["start_frame"]), int(shot["end_frame"]),
-                                                       cfg.ocr_samples_per_shot))
-            if shot is None:
-                break
-            if idx < int(shot["start_frame"]):
-                continue
-
-            if motion is not None:
-                with timings("motion"):
-                    motion_res[idx] = motion.update(frame)
-            if idx in ocr_targets:
-                ocr_frames.append(frame)
-            if (idx - int(shot["start_frame"])) % cfg.detect_every == 0:
-                batch.append((idx, frame))
-                if len(batch) >= cfg.detect_batch:
-                    flush()
-        finish_shot()
-    except BaseException:
-        if speakers is not None:
-            speakers.abort()
-        raise
+        raw = tracker.track_shots(proxy_path, shots, batch_size=cfg.detect_batch, decoders=workers,
+                                  face_workers=workers)
     finally:
-        frames.close()
-    for name, secs in tracker.seconds.items():
-        timings.add(name, secs)
-    log(f"  tracked {len(tracks)} shots, {len(motion_res)} motion frames, {len(ocr_records)} text items "
-        f"({time.perf_counter() - t_start:.1f}s)")
-
-    del tracker, reader
-    clean_gpu_memory()
-
-    # ---- active speaker detection: wait for the shots still being scored
-    speaker_scores: List[Dict[str, Any]] = []
-    if speakers is not None:
-        t_wait = time.perf_counter()
-        speaker_scores = speakers.finish()
-        log(f"  scored {len(speaker_scores)} face tracks with TalkNet "
-            f"(+{time.perf_counter() - t_wait:.1f}s after tracking finished)")
+        for name, secs in tracker.seconds.items():
+            timings.add(name, secs)
+        del tracker
         clean_gpu_memory()
 
-    total = time.perf_counter() - t_start
-    log(f"  visual timings ({total:.1f}s total; speaker work overlaps tracking): {timings.summary()}")
-    return {"tracks": tracks, "motion": motion_res, "ocr": ocr_records, "speaker_scores": speaker_scores,
-            "timings": {**timings.as_dict(), "total": round(total, 2)}}
+    tracks: ShotTracks = {}
+    for shot in shots:
+        sid, s0, s1 = int(shot["shot_id"]), int(shot["start_frame"]), int(shot["end_frame"])
+        frames = raw.get(sid, {})
+        tracks[sid] = fill_skipped_frames(frames, s0, s1) if cfg.detect_every > 1 else dict(frames)
+    return tracks
 
 
-class SpeakerScorer:
-    """Active speaker detection (TalkNet) for finished shots, in ONE background thread.
+# --------------------------------------------------------------------------- 2. speakers
+def _score_speakers(proxy_path: str, audio_path: str, shots: List[Dict[str, Any]], tracks: ShotTracks,
+                    cfg: PipelineConfig, device: str, workers: int, timings: Timings) -> List[Dict[str, Any]]:
+    """Face crops for many shots at once (thread pool), scored by TalkNet in large GPU batches.
 
-    ``add_shot`` returns immediately; the thread builds the shot's face crops (with its own video
-    reader) and collects them. Once enough face frames are waiting, they are scored together as
-    big GPU batches, so tracks from several shots share the same TalkNet passes.
+    Crops are scored once ``talknet_batch_frames * 8`` face frames are waiting, so memory stays
+    bounded on long shards; the pool keeps building the next shots' crops meanwhile.
     """
+    from ..models.speakers import build_shot_inputs, load_mfcc
+    from ..models.talknet import load_talknet, score_tracks
 
-    def __init__(self, proxy_path: str, audio_path: str, cfg: PipelineConfig, device: str,
-                 timings: Timings, log=print):
-        self.cfg, self.device, self.timings, self.log = cfg, device, timings, log
-        self.flush_frames = cfg.talknet_batch_frames * 8  # score once this many face frames are waiting
-        self.pending: List[Dict[str, Any]] = []
-        self.pending_frames = 0
-        self.scores: List[Dict[str, Any]] = []
-        self.futures: List[Future] = []
-        self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="talknet")
-        self.futures.append(self.pool.submit(self._setup, proxy_path, audio_path))
+    with timings("talknet_setup"):
+        mfcc = load_mfcc(audio_path)
+        model = load_talknet(ensure_for(cfg, "talknet"), device)
 
-    # ----------------------------------------------------------- main-thread API
-    def add_shot(self, shot_id: int, start: int, end: int, frame_tracks: Dict[int, list]) -> None:
-        self._raise_if_failed()
-        self.futures.append(self.pool.submit(self._add_shot, shot_id, start, end, frame_tracks))
+    readers = ThreadLocalReaders(proxy_path)
+    flush_frames = cfg.talknet_batch_frames * 8
+    scores: List[Dict[str, Any]] = []
+    pending: List[Dict[str, Any]] = []
+    pending_frames = 0
 
-    def finish(self) -> List[Dict[str, Any]]:
-        self.futures.append(self.pool.submit(self._finish))
+    def crops(shot: Dict[str, Any]) -> List[Dict[str, Any]]:
+        sid = int(shot["shot_id"])
+        t0 = time.perf_counter()
         try:
-            for f in self.futures:
-                f.result()  # re-raises any error from the background thread
+            return build_shot_inputs(readers.get(), mfcc, sid, int(shot["start_frame"]), int(shot["end_frame"]),
+                                     tracks.get(sid, {}))
         finally:
-            self.pool.shutdown(wait=True)
-        return self.scores
+            timings.add("speaker_crops_cpu", time.perf_counter() - t0)
 
-    def abort(self) -> None:
-        for f in self.futures:
-            f.cancel()
-        self.pool.shutdown(wait=True)
+    def score() -> None:
+        nonlocal pending, pending_frames
+        if pending:
+            with timings("talknet"):
+                scores.extend(score_tracks(model, pending, device, cfg.talknet_batch_frames))
+        pending, pending_frames = [], 0
 
-    def _raise_if_failed(self) -> None:
-        for f in self.futures:
-            if f.done() and f.exception() is not None:
-                raise f.exception()
+    try:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="talknet-crops") as pool:
+            for inputs in _bounded_map(pool, crops, shots, window=workers * 2):
+                pending.extend(inputs)
+                pending_frames += sum(len(t["frames"]) for t in inputs)
+                if pending_frames >= flush_frames:
+                    score()
+        score()
+    finally:
+        readers.close()
+        del model
+        clean_gpu_memory()
+    return scores
 
-    # ------------------------------------------------------- background thread
-    def _setup(self, proxy_path: str, audio_path: str) -> None:
-        import cv2
 
-        from ..models.speakers import load_mfcc
-        from ..models.talknet import load_talknet
-
-        with self.timings("talknet_setup"):
-            self.cap = cv2.VideoCapture(proxy_path)
-            self.mfcc = load_mfcc(audio_path)
-            self.model = load_talknet(ensure_for(self.cfg, "talknet"), self.device)
-
-    def _add_shot(self, shot_id: int, start: int, end: int, frame_tracks: Dict[int, list]) -> None:
-        from ..models.speakers import build_shot_inputs
-
-        with self.timings("speaker_crops"):
-            inputs = build_shot_inputs(self.cap, self.mfcc, shot_id, start, end, frame_tracks)
-        self.pending.extend(inputs)
-        self.pending_frames += sum(len(t["frames"]) for t in inputs)
-        if self.pending_frames >= self.flush_frames:
-            self._score_pending()
-
-    def _score_pending(self) -> None:
-        if not self.pending:
-            return
-        from ..models.talknet import score_tracks
-
-        with self.timings("talknet"):
-            self.scores.extend(score_tracks(self.model, self.pending, self.device, self.cfg.talknet_batch_frames))
-        self.pending, self.pending_frames = [], 0
-
-    def _finish(self) -> None:
-        try:
-            self._score_pending()
-        finally:
-            if getattr(self, "cap", None) is not None:
-                self.cap.release()
-            self.model = None
+def _bounded_map(pool: ThreadPoolExecutor, fn: Callable, items: Iterable, window: int) -> Iterator:
+    """Like ``pool.map`` (results in order) but with at most ``window`` tasks in flight."""
+    it = iter(items)
+    futures = []
+    for item in it:
+        futures.append(pool.submit(fn, item))
+        if len(futures) >= window:
+            break
+    while futures:
+        result = futures.pop(0).result()
+        nxt = next(it, None)
+        if nxt is not None:
+            futures.append(pool.submit(fn, nxt))
+        yield result

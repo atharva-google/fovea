@@ -25,7 +25,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-transcribe = ["faster-whisper", "demucs"]
+transcribe = ["faster-whisper>=1.1.0", "demucs"]
 
 [project.scripts]
 fovea = "fovea.cli:main"

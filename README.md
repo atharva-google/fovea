@@ -43,7 +43,7 @@ fovea/                     THE VIDEO ENGINE (Python package)
 ├── pipeline.py            runs the 4 steps in order on this machine
 ├── steps/                 the 4 steps, one file each:
 │   ├── prep.py              proxy video, audio, shot detection
-│   ├── visual.py            tracking, motion, OCR, speaker detection
+│   ├── visual.py            tracking -> speakers -> OCR -> motion, each stage parallel over shots
 │   ├── audio.py             Demucs vocals + Whisper transcript (optional, parallel)
 │   └── render.py            camera path + final videos
 ├── models/                the AI models the steps use (tracker, ocr, motion, speakers, talknet/)
@@ -77,7 +77,7 @@ The **same `fovea/steps`** run everywhere: on Colab, from the CLI, in the local 
 | change a default (speed, thresholds, models) | `fovea/config.py` |
 | change how the camera moves | `fovea/framing/camera.py` |
 | change what the camera prefers to look at | `extract_frame_candidates` in `fovea/framing/focal.py` |
-| add a new per-frame analysis | a new file in `fovea/models/`, called from the loop in `fovea/steps/visual.py` |
+| add a new per-frame analysis | a new file in `fovea/models/`, run as a new stage in `fovea/steps/visual.py` |
 | add or change an API endpoint | `backend/api.py` |
 | change cloud resources or limits | `backend/gcp/config.env` (created by deploy.sh) |
 
@@ -109,6 +109,9 @@ run("in.mp4", targets=["9:16", "1:1"], transcribe=True)
 | `--detect-every` | 2 | run the detector every N frames and interpolate the rest |
 | `--face-backend` | `mediapipe` | `pose` = YOLO-pose head keypoints on the GPU (faster; check accuracy first) |
 | `--max-shards` | 1 | split the visual step into N groups of shots |
+| `--visual-workers` | auto | shots decoded / processed at once in the tracking and speaker stages |
+| `--ocr-workers` | auto | OCR threads (one shared EasyOCR model) |
+| `--motion-workers` | auto | motion saliency threads (CPU) |
 | `--no-gpu-video` | off | disable NVDEC/NVENC |
 
 Each video gets a job folder in `working/<video>/`. Steps whose outputs already exist are skipped, so re-rendering a new format only re-runs `render`. Use `--force` to start over.

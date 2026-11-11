@@ -44,6 +44,10 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="mediapipe = original (CPU); pose = YOLO-pose head keypoints (GPU, faster)")
     s.add_argument("--max-shards", type=int, default=d.max_shards)
     s.add_argument("--no-gpu-video", action="store_true", help="Disable NVDEC/NVENC")
+    s.add_argument("--visual-workers", type=int, default=d.visual_workers,
+                   help="Shots decoded/processed at once in the tracking + speaker stages (0 = auto)")
+    s.add_argument("--ocr-workers", type=int, default=d.ocr_workers, help="OCR threads (0 = auto)")
+    s.add_argument("--motion-workers", type=int, default=d.motion_workers, help="Motion threads (0 = auto)")
 
     g = r.add_argument_group("analysis")
     g.add_argument("--shot-threshold", type=float, default=d.shot_threshold)
@@ -102,6 +106,7 @@ def main(argv=None) -> None:
         targets=args.targets, short_side=args.short_side, device=args.device,
         proxy_height=args.proxy_height, detect_every=args.detect_every, face_backend=args.face_backend,
         max_shards=args.max_shards, use_gpu_video=not args.no_gpu_video,
+        visual_workers=args.visual_workers, ocr_workers=args.ocr_workers, motion_workers=args.motion_workers,
         shot_threshold=args.shot_threshold, enable_ocr=not args.no_ocr, ocr_langs=args.ocr_langs,
         enable_motion=not args.no_motion, enable_speaker_detection=not args.no_speaker,
         transcribe=args.transcribe, whisper_model=args.whisper_model,

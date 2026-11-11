@@ -1,15 +1,18 @@
 """Frame-difference motion saliency: where on the X axis is the action happening?
 
 Incremental: call :meth:`MotionAnalyzer.reset` at each shot start and
-:meth:`MotionAnalyzer.update` once per frame (fed by the single decode loop).
+:meth:`MotionAnalyzer.update` once per frame. ``analyze_shots`` runs many shots in parallel.
 """
 
 from __future__ import annotations
 
-from typing import Dict
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, List, Sequence
 
 import cv2
 import numpy as np
+
+from ..utils.video import ShotReader, split_contiguous
 
 MotionResults = Dict[int, Dict[str, float]]
 
@@ -59,3 +62,35 @@ class MotionAnalyzer:
             "motion_weight": round(self.anchor_weight, 3),
             "instant_density": round(instant_density, 3),
         }
+
+
+def analyze_shots(video_path: str, shots: Sequence[Dict[str, Any]], width: int, height: int,
+                  scale: float = 0.5, workers: int = 2) -> MotionResults:
+    """Motion saliency for many shots at once.
+
+    Shots are split into runs of consecutive shots; a thread pool processes the runs, each task
+    with its own video reader and analyzer. The analyzer is reset at every cut anyway, so the
+    results are identical to processing the shots one after another. OpenCV releases the GIL,
+    so threads use several CPU cores.
+    """
+    shots = sorted(shots, key=lambda s: int(s["start_frame"]))
+    groups = split_contiguous(shots, max(1, workers) * 4)
+
+    def run_group(group: List[Dict[str, Any]]) -> MotionResults:
+        reader = ShotReader(video_path)
+        analyzer = MotionAnalyzer(width, height, scale=scale)
+        out: MotionResults = {}
+        try:
+            for shot in group:
+                analyzer.reset()
+                for idx, frame in reader.frames(int(shot["start_frame"]), int(shot["end_frame"])):
+                    out[idx] = analyzer.update(frame)
+        finally:
+            reader.close()
+        return out
+
+    results: MotionResults = {}
+    with ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="motion") as pool:
+        for part in pool.map(run_group, groups):
+            results.update(part)
+    return dict(sorted(results.items()))

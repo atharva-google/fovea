@@ -20,6 +20,9 @@ python -m backend serve
 ```
 To change settings: `cp backend/local.env.example backend/local.env`, edit it, then run `python -m backend serve --env backend/local.env`.
 
+## Run it on Colab (free GPU, public URL)
+Open [`notebooks/colab_backend.ipynb`](../notebooks/colab_backend.ipynb) in Colab with a GPU runtime and run all cells. It installs everything, downloads the weights, starts the backend (`MODE=local`, `AUTH_MODE=api_key`) and exposes it through a Cloudflare quick tunnel. It then prints the public URL and API key. The URL changes on every start, and uploads are limited to ~100 MB by the tunnel.
+
 ## Deploy it to Google Cloud
 ```bash
 ./backend/gcp/deploy.sh

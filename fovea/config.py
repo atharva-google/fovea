@@ -63,6 +63,14 @@ class PipelineConfig:
     motion_scale: float = 0.5 # motion saliency runs at this fraction of proxy size
     use_gpu_video: bool = True  # NVDEC decode / NVENC encode when available
 
+    # ------------------------------------------------- parallelism (0 = auto)
+    # The visual step runs stage by stage (tracking -> speakers -> OCR -> motion); each stage
+    # works on several shots at once with this many threads.
+    visual_workers: int = 0   # decoder threads feeding YOLO + face / TalkNet crop threads
+    ocr_workers: int = 0      # threads calling EasyOCR (one shared model)
+    motion_workers: int = 0   # threads computing motion saliency (CPU)
+    ocr_serialize: bool = False  # put a lock around EasyOCR calls if concurrent use misbehaves
+
     # ---------------------------------------------------------- sharding
     max_shards: int = 1              # split visual analysis across this many workers
     min_frames_per_shard: int = 3000 # don't create shards smaller than this (~2 min @25fps)
@@ -93,6 +101,7 @@ class PipelineConfig:
     # ------------------------------ audio branch (runs in parallel, not used for framing)
     transcribe: bool = False  # Demucs vocals split + faster-whisper transcript
     whisper_model: str = "medium"
+    whisper_batch_size: int = 0  # batched faster-whisper; 0 = auto (16 on CUDA, 4 on CPU)
 
     # ---------------------------------------------------------------- framing
     focal_strategy: str = "viterbi"  # "viterbi" | "rules"
@@ -118,6 +127,8 @@ class PipelineConfig:
             raise ValueError("face_backend must be 'mediapipe' or 'pose'")
         self.detect_every = max(1, int(self.detect_every))
         self.max_shards = max(1, int(self.max_shards))
+        for name in ("visual_workers", "ocr_workers", "motion_workers", "whisper_batch_size"):
+            setattr(self, name, max(0, int(getattr(self, name))))
         self.talknet_batch_frames = max(150, int(self.talknet_batch_frames))  # >= one 6 s window
 
     # ------------------------------------------------------------ helpers

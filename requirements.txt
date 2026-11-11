@@ -14,5 +14,5 @@ gdown
 huggingface_hub
 
 # Optional: only needed for --transcribe
-faster-whisper
+faster-whisper>=1.1.0  # BatchedInferencePipeline
 demucs

@@ -2,7 +2,7 @@
 
   * probe the original video
   * make a small 720p / 25fps silent copy ("proxy") that every later step analyses
-  * extract 16 kHz audio
+  * extract 16 kHz audio  (at the same time as the proxy encode)
   * detect shots (scene cuts)
   * split the shots into groups ("shards") so the visual step can run on several GPUs
 
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List
 
 import pandas as pd
@@ -36,12 +37,16 @@ def run(job: JobDir, cfg: PipelineConfig, log=print) -> int:
         raise ValueError(f"Video is {src.duration:.0f}s long; the limit is {cfg.max_duration_s:.0f}s")
 
     t = time.time()
-    make_proxy(source, job.proxy, cfg.proxy_height, cfg.proxy_fps, cfg.use_gpu_video)
-    has_audio = has_audio_stream(source)
-    if has_audio:
-        extract_audio(source, job.audio)
-    else:
-        make_silent_audio(job.audio, src.duration or 1.0)
+    # The proxy encode and the audio extraction are independent ffmpeg runs: do them at the same time.
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="prep") as pool:
+        proxy_job = pool.submit(make_proxy, source, job.proxy, cfg.proxy_height, cfg.proxy_fps, cfg.use_gpu_video)
+        has_audio = has_audio_stream(source)
+        if has_audio:
+            audio_job = pool.submit(extract_audio, source, job.audio)
+        else:
+            audio_job = pool.submit(make_silent_audio, job.audio, src.duration or 1.0)
+        proxy_job.result()
+        audio_job.result()
     proxy = probe_video(job.proxy)
     log(f"  proxy {proxy.width}x{proxy.height} @ {proxy.fps:.0f}fps ({time.time() - t:.1f}s)")
 

@@ -16,6 +16,7 @@ from scipy import signal
 from scipy.interpolate import interp1d
 from scipy.io import wavfile
 
+from ..utils.video import ShotReader
 from .tracker import ShotTracks
 
 
@@ -46,19 +47,19 @@ def build_talknet_inputs(
     """TalkNet inputs for every shot at once (see ``build_shot_inputs`` for one shot)."""
     global_mfcc = load_mfcc(audio_path)
     processed: List[Dict[str, Any]] = []
-    cap = cv2.VideoCapture(str(video_path))
-    for _, shot in shots_df.iterrows():
+    reader = ShotReader(video_path)
+    for _, shot in shots_df.sort_values("start_frame").iterrows():
         s_id = int(shot["shot_id"])
         if s_id not in shot_tracks:
             continue
-        processed.extend(build_shot_inputs(cap, global_mfcc, s_id, int(shot["start_frame"]), int(shot["end_frame"]),
+        processed.extend(build_shot_inputs(reader, global_mfcc, s_id, int(shot["start_frame"]), int(shot["end_frame"]),
                                            shot_tracks[s_id], min_track_len, crop_scale))
-    cap.release()
+    reader.close()
     return processed
 
 
 def build_shot_inputs(
-    cap: "cv2.VideoCapture",
+    reader: ShotReader,
     global_mfcc: np.ndarray,
     s_id: int,
     s_start_f: int,
@@ -100,16 +101,7 @@ def build_shot_inputs(
     # Read the shot once, keeping only frames we need. Frames we don't need are only grabbed
     # (no colour conversion), and reading stops after the last needed frame.
     last_needed = max(needed_frames)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, s_start_f)
-    frame_cache = {}
-    for curr_f in range(s_start_f, min(s_end_f, last_needed + 1)):
-        if curr_f in needed_frames:
-            ret, frame = cap.read()
-            if not ret or frame is None:
-                break
-            frame_cache[curr_f] = frame
-        elif not cap.grab():
-            break
+    frame_cache = dict(reader.frames(s_start_f, min(s_end_f, last_needed + 1), want=needed_frames.__contains__))
 
     processed: List[Dict[str, Any]] = []
     for tid, data in valid_tracks.items():

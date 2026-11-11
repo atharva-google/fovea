@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import queue
 import shutil
 import subprocess
@@ -9,7 +10,7 @@ import threading
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterator, List, Optional, Tuple
+from typing import Callable, Iterator, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -184,6 +185,104 @@ def iter_frames(video_path: str | Path, start_frame: int = 0, end_frame: Optiona
                 q.get_nowait()
             except queue.Empty:
                 t.join(timeout=0.05)
+
+
+class ShotReader:
+    """One OpenCV reader that decodes frame ranges ``[start, end)`` on demand.
+
+    Each worker thread owns one. It only seeks when the requested range does not start where
+    the previous read stopped, so consecutive shots are read without seeking. Frames that the
+    caller does not want are only grabbed (decoded, but no colour conversion / copy).
+    """
+
+    def __init__(self, video_path: str | Path):
+        self.cap = cv2.VideoCapture(str(video_path))
+        if not self.cap.isOpened():
+            raise RuntimeError(f"Could not open video file: {video_path}")
+        self.pos: Optional[int] = 0
+
+    def frames(self, start: int, end: int, want: Optional[Callable[[int], bool]] = None
+               ) -> Iterator[Tuple[int, np.ndarray]]:
+        """Yield ``(idx, frame)`` for every frame in ``[start, end)`` for which ``want(idx)`` is true."""
+        if end <= start:
+            return
+        if self.pos != start:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+        self.pos = start
+        for idx in range(start, end):
+            if want is None or want(idx):
+                ret, frame = self.cap.read()
+                ok = ret and frame is not None
+            else:
+                ok, frame = self.cap.grab(), None
+            if not ok:
+                self.pos = None  # unknown position -> seek next time
+                return
+            self.pos = idx + 1
+            if frame is not None:
+                yield idx, frame
+
+    def frame(self, idx: int) -> Optional[np.ndarray]:
+        for _, f in self.frames(idx, idx + 1):
+            return f
+        return None
+
+    def close(self) -> None:
+        self.cap.release()
+
+
+class ThreadLocalReaders:
+    """A ``ShotReader`` per thread (for thread pools); ``close()`` releases all of them."""
+
+    def __init__(self, video_path: str | Path):
+        self.video_path = video_path
+        self._local = threading.local()
+        self._all: List[ShotReader] = []
+        self._lock = threading.Lock()
+
+    def get(self) -> ShotReader:
+        r = getattr(self._local, "reader", None)
+        if r is None:
+            r = self._local.reader = ShotReader(self.video_path)
+            with self._lock:
+                self._all.append(r)
+        return r
+
+    def close(self) -> None:
+        with self._lock:
+            for r in self._all:
+                r.close()
+            self._all.clear()
+
+
+def auto_workers(requested: int, cap: int = 4) -> int:
+    """``requested`` if > 0, else a default from the CPU count (at most ``cap``)."""
+    if requested and requested > 0:
+        return int(requested)
+    return max(1, min(cap, (os.cpu_count() or 2) // 2))
+
+
+def split_contiguous(shots: Sequence[dict], n_groups: int) -> List[List[dict]]:
+    """Split shots (sorted by start) into up to ``n_groups`` runs of consecutive shots with
+    ~equal frame counts. A worker reading one run seeks once instead of once per shot."""
+    shots = list(shots)
+    if not shots:
+        return []
+    n = max(1, min(n_groups, len(shots)))
+    total = sum(int(s["end_frame"]) - int(s["start_frame"]) for s in shots)
+    target = total / n
+    groups: List[List[dict]] = []
+    current: List[dict] = []
+    acc = 0
+    for s in shots:
+        current.append(s)
+        acc += int(s["end_frame"]) - int(s["start_frame"])
+        if acc >= target * (len(groups) + 1) and len(groups) < n - 1:
+            groups.append(current)
+            current = []
+    if current:
+        groups.append(current)
+    return groups
 
 
 class FFmpegFrameReader:
