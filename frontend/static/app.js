@@ -35,8 +35,95 @@ const state = {
   localVideoBlobs: new Map(), // job_id -> blob URL for instant preview before/during processing
   transcripts: new Map(), // job_id -> array of transcript segments
   draftConfigs: new Map(), // job_id -> { targets: Set, customTarget: "", options: {...} }
+  backendOnline: false,
+  demoSimTimers: new Map(),
   pollTimer: null,
 };
+
+const DEMO_SAMPLE_JOBS = [
+  {
+    job_id: "demo-running-01",
+    user_id: "user-default",
+    filename: "keynote_interview_4k.mp4",
+    status: "running",
+    progress: 0.55,
+    queue_position: null,
+    targets: ["9:16", "1:1"],
+    created_at: new Date(Date.now() - 95_000).toISOString(),
+    started_at: new Date(Date.now() - 80_000).toISOString(),
+    steps: {
+      prep: {
+        status: "done",
+        started_at: new Date(Date.now() - 80_000).toISOString(),
+        finished_at: new Date(Date.now() - 68_000).toISOString(),
+      },
+      visual: {
+        status: "running",
+        done: [0, 1],
+        total: 3,
+        started_at: new Date(Date.now() - 68_000).toISOString(),
+      },
+      audio: {
+        status: "running",
+        started_at: new Date(Date.now() - 68_000).toISOString(),
+      },
+      render: { status: "pending" },
+    },
+    outputs: {},
+    transcript_url: null,
+  },
+  {
+    job_id: "demo-uploaded-02",
+    user_id: "user-default",
+    filename: "podcast_ep42_raw.mp4",
+    status: "awaiting_upload",
+    progress: 0,
+    queue_position: null,
+    targets: null,
+    created_at: new Date(Date.now() - 300_000).toISOString(),
+    steps: {},
+    outputs: {},
+    transcript_url: null,
+  },
+  {
+    job_id: "demo-complete-03",
+    user_id: "user-default",
+    filename: "product_launch_demo.mp4",
+    status: "complete",
+    progress: 1.0,
+    queue_position: null,
+    targets: ["9:16", "1:1", "4:5"],
+    created_at: new Date(Date.now() - 1800_000).toISOString(),
+    started_at: new Date(Date.now() - 1790_000).toISOString(),
+    finished_at: new Date(Date.now() - 1710_000).toISOString(),
+    steps: {
+      prep: {
+        status: "done",
+        started_at: new Date(Date.now() - 1790_000).toISOString(),
+        finished_at: new Date(Date.now() - 1780_000).toISOString(),
+      },
+      visual: {
+        status: "done",
+        done: [0, 1],
+        total: 2,
+        started_at: new Date(Date.now() - 1780_000).toISOString(),
+        finished_at: new Date(Date.now() - 1730_000).toISOString(),
+      },
+      audio: {
+        status: "done",
+        started_at: new Date(Date.now() - 1780_000).toISOString(),
+        finished_at: new Date(Date.now() - 1745_000).toISOString(),
+      },
+      render: {
+        status: "done",
+        started_at: new Date(Date.now() - 1730_000).toISOString(),
+        finished_at: new Date(Date.now() - 1710_000).toISOString(),
+      },
+    },
+    outputs: {},
+    transcript_url: null,
+  },
+];
 
 // ============================================================================
 // DOM References
@@ -166,42 +253,68 @@ function getDraftConfig(jobId) {
 }
 
 // ============================================================================
-// API Calls
+// API Calls (with automatic UI-Only Demo fallback when backend is not running)
 // ============================================================================
+function ensureDemoSeeded() {
+  if (state.jobs.length === 0) {
+    state.jobs = structuredClone(DEMO_SAMPLE_JOBS);
+    state.transcripts.set("demo-complete-03", [
+      { start_s: 0.0, segment_transcript: "Welcome to Fovea, our smart video reframing engine." },
+      { start_s: 4.2, segment_transcript: "Notice how the camera automatically tracks the active speaker." },
+      { start_s: 9.8, segment_transcript: "When on-screen text or motion appears, Viterbi smoothing pans smoothly." },
+    ]);
+  }
+}
+
 async function checkHealthAndConfig() {
   try {
     const healthRes = await fetch("/api/health");
     const health = await healthRes.json();
     if (healthRes.ok && health.ok) {
+      state.backendOnline = true;
       el.backendStatusDot.className = "conn-dot online";
       const mode = health.backend?.mode || "local";
       el.backendStatusText.textContent = `Online (${mode})`;
     } else {
+      state.backendOnline = false;
       el.backendStatusDot.className = "conn-dot offline";
-      el.backendStatusText.textContent = "Backend Offline";
+      el.backendStatusText.textContent = "UI Demo (No Backend)";
+      ensureDemoSeeded();
     }
   } catch {
+    state.backendOnline = false;
     el.backendStatusDot.className = "conn-dot offline";
-    el.backendStatusText.textContent = "Backend Offline";
+    el.backendStatusText.textContent = "UI Demo (No Backend)";
+    ensureDemoSeeded();
   }
 
-  try {
-    const cfgRes = await fetch("/api/v1/config");
-    if (cfgRes.ok) {
-      state.config = await cfgRes.json();
-      renderLimitsBar();
+  if (state.backendOnline) {
+    try {
+      const cfgRes = await fetch("/api/v1/config");
+      if (cfgRes.ok) {
+        state.config = await cfgRes.json();
+      }
+    } catch {
+      // Keep defaults
     }
-  } catch {
-    // Keep defaults if backend is not yet started
   }
+  renderLimitsBar();
 }
 
 async function fetchJobsList() {
+  if (!state.backendOnline) {
+    ensureDemoSeeded();
+    renderSidebarLists();
+    if (state.selectedJobId) {
+      await fetchSelectedJobDetail(state.selectedJobId);
+    }
+    return;
+  }
+
   try {
     const res = await fetch(`/api/v1/jobs?user_id=${encodeURIComponent(state.userId)}&limit=50`);
     if (!res.ok) return;
     const list = await res.json();
-    // Filter out deleted jobs
     state.jobs = list.filter((j) => j.status !== "deleted");
     renderSidebarLists();
 
@@ -214,6 +327,17 @@ async function fetchJobsList() {
 }
 
 async function fetchSelectedJobDetail(jobId) {
+  if (!state.backendOnline) {
+    const found = state.jobs.find((j) => j.job_id === jobId);
+    if (!found) return;
+    state.selectedJobDetail = found;
+    renderSidebarLists();
+    renderWorkspaceHeader();
+    renderJobDetailView();
+    syncVideoPlayerTabs();
+    return;
+  }
+
   try {
     const res = await fetch(
       `/api/v1/jobs/${encodeURIComponent(jobId)}?user_id=${encodeURIComponent(state.userId)}`
@@ -222,7 +346,6 @@ async function fetchSelectedJobDetail(jobId) {
     const detail = await res.json();
     state.selectedJobDetail = detail;
 
-    // Update the corresponding entry in state.jobs as well
     const idx = state.jobs.findIndex((j) => j.job_id === jobId);
     if (idx !== -1) {
       state.jobs[idx] = { ...state.jobs[idx], ...detail };
@@ -230,7 +353,6 @@ async function fetchSelectedJobDetail(jobId) {
       state.jobs.unshift(detail);
     }
 
-    // If transcript_url just became available, fetch it once
     if (detail.transcript_url && !state.transcripts.has(jobId)) {
       fetchTranscript(jobId, detail.transcript_url);
     }
@@ -265,7 +387,6 @@ async function fetchTranscript(jobId, url) {
 async function handleFileUpload(file) {
   if (!file) return;
 
-  // Client-side size check if demo_mode limit is set
   const maxMb = state.config.max_upload_mb;
   if (maxMb && file.size > maxMb * 1024 * 1024) {
     alert(`File is ${(file.size / (1024 * 1024)).toFixed(1)} MB, which exceeds the ${maxMb} MB limit.`);
@@ -276,6 +397,37 @@ async function handleFileUpload(file) {
   el.uploadFilenameLabel.textContent = `Uploading ${file.name}...`;
   el.uploadPctLabel.textContent = "0%";
   el.uploadProgressFill.style.width = "0%";
+
+  // UI-only Demo Mode when backend isn't running
+  if (!state.backendOnline) {
+    const jobId = `demo-${Date.now().toString(36)}`;
+    const localBlobUrl = URL.createObjectURL(file);
+    state.localVideoBlobs.set(jobId, localBlobUrl);
+
+    for (const pct of [25, 60, 100]) {
+      await new Promise((r) => setTimeout(r, 140));
+      el.uploadPctLabel.textContent = `${pct}%`;
+      el.uploadProgressFill.style.width = `${pct}%`;
+    }
+
+    el.uploadProgressBox.hidden = true;
+    state.jobs.unshift({
+      job_id: jobId,
+      user_id: state.userId,
+      filename: file.name,
+      status: "awaiting_upload",
+      progress: 0,
+      queue_position: null,
+      targets: null,
+      created_at: new Date().toISOString(),
+      steps: {},
+      outputs: {},
+      transcript_url: null,
+    });
+    renderSidebarLists();
+    selectJob(jobId);
+    return;
+  }
 
   try {
     // 1. Create upload slot & job record (status = "awaiting_upload")
@@ -331,7 +483,6 @@ async function handleFileUpload(file) {
     });
 
     el.uploadProgressBox.hidden = true;
-    // Select the newly uploaded job (now in "Uploaded · Not Started" state)
     await fetchJobsList();
     selectJob(jobId);
   } catch (err) {
@@ -343,6 +494,73 @@ async function handleFileUpload(file) {
 // ============================================================================
 // Start Processing Flow (POST /v1/jobs/{job_id}/start)
 // ============================================================================
+function simulateDemoPipeline(jobId, targets, options) {
+  const job = state.jobs.find((j) => j.job_id === jobId);
+  if (!job) return;
+
+  const t0 = new Date().toISOString();
+  job.status = "running";
+  job.targets = targets;
+  job.started_at = t0;
+  job.progress = 0.08;
+  job.steps = {
+    prep: { status: "running", started_at: t0 },
+    visual: { status: "pending", done: [], total: 2 },
+    audio: { status: options.transcribe ? "pending" : "skipped" },
+    render: { status: "pending" },
+  };
+  fetchSelectedJobDetail(jobId);
+
+  setTimeout(() => {
+    const t1 = new Date().toISOString();
+    job.progress = 0.25;
+    job.steps.prep = { status: "done", started_at: t0, finished_at: t1 };
+    job.steps.visual = { status: "running", done: [0], total: 2, started_at: t1 };
+    if (options.transcribe) {
+      job.steps.audio = { status: "running", started_at: t1 };
+    }
+    if (state.selectedJobId === jobId) fetchSelectedJobDetail(jobId);
+    else renderSidebarLists();
+  }, 1800);
+
+  setTimeout(() => {
+    const t2 = new Date().toISOString();
+    job.progress = 0.75;
+    job.steps.visual.status = "done";
+    job.steps.visual.done = [0, 1];
+    job.steps.visual.finished_at = t2;
+    job.steps.render = { status: "running", started_at: t2 };
+    if (state.selectedJobId === jobId) fetchSelectedJobDetail(jobId);
+    else renderSidebarLists();
+  }, 3800);
+
+  setTimeout(() => {
+    const t3 = new Date().toISOString();
+    job.status = "complete";
+    job.progress = 1.0;
+    job.finished_at = t3;
+    job.steps.render.status = "done";
+    job.steps.render.finished_at = t3;
+    if (options.transcribe) {
+      job.steps.audio.status = "done";
+      job.steps.audio.finished_at = t3;
+      state.transcripts.set(jobId, [
+        { start_s: 0.0, segment_transcript: "Simulated Whisper transcript segment #1 (UI Demo mode)." },
+        { start_s: 3.5, segment_transcript: "Click any transcript line to jump the right-hand video player." },
+      ]);
+    }
+    const blob = state.localVideoBlobs.get(jobId);
+    if (blob) {
+      targets.forEach((t) => {
+        const label = t.replace(":", "x");
+        job.outputs[label] = blob;
+      });
+    }
+    if (state.selectedJobId === jobId) fetchSelectedJobDetail(jobId);
+    else renderSidebarLists();
+  }, 5600);
+}
+
 async function startJobProcessing(jobId) {
   const draft = getDraftConfig(jobId);
   const targets = Array.from(draft.targets);
@@ -357,6 +575,11 @@ async function startJobProcessing(jobId) {
   const maxTargets = state.config.max_targets || 4;
   if (targets.length > maxTargets) {
     alert(`Please select at most ${maxTargets} output formats.`);
+    return;
+  }
+
+  if (!state.backendOnline) {
+    simulateDemoPipeline(jobId, targets, draft.options);
     return;
   }
 
@@ -383,6 +606,16 @@ async function startJobProcessing(jobId) {
 async function deleteJob(jobId, evt) {
   if (evt) evt.stopPropagation();
   if (!confirm("Delete this video job and its generated files?")) return;
+
+  if (!state.backendOnline) {
+    state.jobs = state.jobs.filter((j) => j.job_id !== jobId);
+    if (state.selectedJobId === jobId) {
+      showUploadView();
+    } else {
+      renderSidebarLists();
+    }
+    return;
+  }
 
   const res = await fetch(
     `/api/v1/jobs/${encodeURIComponent(jobId)}?user_id=${encodeURIComponent(state.userId)}`,
