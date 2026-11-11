@@ -39,11 +39,12 @@ from ..utils.weights import ensure_for
 
 
 def run(job: JobDir, cfg: PipelineConfig, device: str, shard: int, log=print,
-        progress: Optional[Progress] = None) -> None:
+        progress: Optional[Progress] = None) -> Optional[Dict[str, Any]]:
+    """Analyse one shard; returns a small summary (counts per stage) for logs / the job record."""
     out = job.shard_result(shard)
     if out.exists() and not cfg.force:
         log(f"  shard {shard} already done, skipping")
-        return
+        return None
 
     _, proxy, _ = job.video_infos()
     plan = job.read_json(job.shards)["shards"][shard]
@@ -56,6 +57,7 @@ def run(job: JobDir, cfg: PipelineConfig, device: str, shard: int, log=print,
     with open(tmp, "wb") as f:
         pickle.dump(result, f)
     tmp.rename(out)
+    return result.get("summary")
 
 
 def analyze_shard(proxy_path: str, audio_path: str, shots_df: pd.DataFrame, proxy_w: int, proxy_h: int,
@@ -74,7 +76,7 @@ def analyze_shard(proxy_path: str, audio_path: str, shots_df: pd.DataFrame, prox
     motion_workers = auto_workers(cfg.motion_workers, cap=8)
     log(f"  {len(shots)} shots | workers: visual={workers} ocr={ocr_workers} motion={motion_workers}")
     progress = progress or noop
-    stages = ["tracking"] + (["speakers"] if cfg.enable_speaker_detection else []) \
+    stages = ["tracking"] + ([SPEAKERS] if cfg.enable_speaker_detection else []) \
         + (["ocr"] if cfg.enable_ocr else []) + (["motion"] if cfg.enable_motion else [])
 
     def counter(stage: str, total: int, unit: str) -> Counter:
@@ -93,8 +95,8 @@ def analyze_shard(proxy_path: str, audio_path: str, shots_df: pd.DataFrame, prox
     if cfg.enable_speaker_detection:
         with _stage("2/4 speakers", timings, log):
             speaker_scores = _score_speakers(proxy_path, audio_path, shots, tracks, cfg, device, workers, timings,
-                                             counter("speakers", len(shots), "shots").add)
-            log(f"    scored {len(speaker_scores)} face tracks")
+                                             counter(SPEAKERS, len(shots), "shots"))
+            log(f"    TalkNet scored {len(speaker_scores)} face tracks")
 
     # ---- 3. OCR
     ocr_records: List[Dict[str, Any]] = []
@@ -118,10 +120,30 @@ def analyze_shard(proxy_path: str, audio_path: str, shots_df: pd.DataFrame, prox
                                         counter("motion", n_frames, "frames").add)
             log(f"    {len(motion_res)} motion frames")
 
+    summary = _summary(shots, tracks, speaker_scores, ocr_records, motion_res, cfg)
+    log(f"  summary: {summary}")
     total = time.perf_counter() - t_start
     log(f"  visual timings ({total:.1f}s total; per-part times inside a stage overlap): {timings.summary()}")
     return {"tracks": tracks, "motion": motion_res, "ocr": ocr_records, "speaker_scores": speaker_scores,
-            "timings": {**timings.as_dict(), "total": round(total, 2)}}
+            "timings": {**timings.as_dict(), "total": round(total, 2)}, "summary": summary}
+
+
+SPEAKERS = "speakers (TalkNet)"
+
+
+def _summary(shots, tracks: ShotTracks, speaker_scores, ocr_records, motion_res, cfg: PipelineConfig) -> Dict[str, Any]:
+    face_tracks = {(sid, d["track_id"]) for sid, frames in tracks.items() for dets in frames.values()
+                   for d in dets if d.get("face_bbox") is not None}
+    speaking = sum(1 for t in speaker_scores for v in t["scores"] if float(v) > 0)
+    return {
+        "shots": len(shots),
+        "frames_with_people": sum(1 for frames in tracks.values() for dets in frames.values() if dets),
+        "face_tracks": len(face_tracks),
+        "talknet": ({"face_tracks_scored": len(speaker_scores), "speaking_frames": speaking}
+                    if cfg.enable_speaker_detection else "disabled"),
+        "ocr_items": len(ocr_records) if cfg.enable_ocr else "disabled",
+        "motion_frames": len(motion_res) if cfg.enable_motion else "disabled",
+    }
 
 
 class _stage:
@@ -173,7 +195,7 @@ def _track(proxy_path: str, shots: List[Dict[str, Any]], fps: float, cfg: Pipeli
 # --------------------------------------------------------------------------- 2. speakers
 def _score_speakers(proxy_path: str, audio_path: str, shots: List[Dict[str, Any]], tracks: ShotTracks,
                     cfg: PipelineConfig, device: str, workers: int, timings: Timings,
-                    on_shot: Optional[Callable[[], None]] = None) -> List[Dict[str, Any]]:
+                    counter: Optional[Counter] = None) -> List[Dict[str, Any]]:
     """Face crops for many shots at once (thread pool), scored by TalkNet in large GPU batches.
 
     Crops are scored once ``talknet_batch_frames * 8`` face frames are waiting, so memory stays
@@ -182,6 +204,8 @@ def _score_speakers(proxy_path: str, audio_path: str, shots: List[Dict[str, Any]
     from ..models.speakers import build_shot_inputs, load_mfcc
     from ..models.talknet import load_talknet, score_tracks
 
+    status = counter.set_detail if counter else (lambda _d: None)
+    status("loading TalkNet + audio features")
     with timings("talknet_setup"):
         mfcc = load_mfcc(audio_path)
         model = load_talknet(ensure_for(cfg, "talknet"), device)
@@ -191,6 +215,7 @@ def _score_speakers(proxy_path: str, audio_path: str, shots: List[Dict[str, Any]
     scores: List[Dict[str, Any]] = []
     pending: List[Dict[str, Any]] = []
     pending_frames = 0
+    found = 0
 
     def crops(shot: Dict[str, Any]) -> List[Dict[str, Any]]:
         sid = int(shot["shot_id"])
@@ -204,20 +229,25 @@ def _score_speakers(proxy_path: str, audio_path: str, shots: List[Dict[str, Any]
     def score() -> None:
         nonlocal pending, pending_frames
         if pending:
+            status(f"TalkNet scoring {len(pending)} face tracks on {device} ({len(scores)} done so far)")
             with timings("talknet"):
                 scores.extend(score_tracks(model, pending, device, cfg.talknet_batch_frames))
         pending, pending_frames = [], 0
+        status(f"building face crops: {found} face tracks found, {len(scores)} scored by TalkNet")
 
     try:
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="talknet-crops") as pool:
             for inputs in _bounded_map(pool, crops, shots, window=workers * 2):
                 pending.extend(inputs)
                 pending_frames += sum(len(t["frames"]) for t in inputs)
-                if on_shot:
-                    on_shot()
+                found += len(inputs)
+                if counter:
+                    counter.add()
                 if pending_frames >= flush_frames:
                     score()
         score()
+        status(f"TalkNet scored {len(scores)} face tracks" if scores else
+               "no face track long enough for TalkNet (needs >= 10 frames with a face)")
     finally:
         readers.close()
         del model

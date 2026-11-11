@@ -98,7 +98,8 @@ While a step runs, `steps.<step>.stage` shows its current stage (refreshed every
            "stage": {"name": "ocr", "index": 3, "count": 4, "done": 40, "total": 120, "unit": "shots", "elapsed_s": 6.2},
            "stage_times": {"tracking": 31.4, "speakers": 12.0}}
 ```
-Stages: prep = `proxy + audio`, `shot detection`; visual = `tracking`, `speakers`, `ocr`, `motion`; render = `focal points`, `encode <label>` (one per target).
+Stages: prep = `proxy + audio`, `shot detection`; visual = `tracking`, `speakers (TalkNet)`, `ocr`, `motion`; render = `focal points`, `encode <label>` (one per target). `stage.detail` says what the stage is doing right now (e.g. `TalkNet scoring 37 face tracks on cuda`).
+When a visual shard finishes, `steps.visual.summary.shard<i>` holds what it found, e.g. `{"shots": 42, "frames_with_people": 3100, "face_tracks": 18, "talknet": {"face_tracks_scored": 15, "speaking_frames": 1900}, "ocr_items": 7, "motion_frames": 3500}`.
 
 **Also available:**
 - `GET /v1/jobs?user_id=`: list a user's jobs

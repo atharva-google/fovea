@@ -47,12 +47,14 @@ class StageReporter:
         self.job_id, self.step, self.shard, self.min_interval = job_id, step, shard, min_interval
         self.prefix = f"shard{shard}/" if shard else ""  # keep stage times of parallel shards apart
         self.stage: Optional[str] = None
+        self.detail: Optional[str] = None
         self.t_stage = self.t_write = 0.0
         self.times: Dict[str, float] = {}
         self.lock = threading.Lock()
 
     def __call__(self, stage: str, done: Optional[int] = None, total: Optional[int] = None,
-                 unit: Optional[str] = None, index: Optional[int] = None, count: Optional[int] = None) -> None:
+                 unit: Optional[str] = None, index: Optional[int] = None, count: Optional[int] = None,
+                 detail: Optional[str] = None) -> None:
         with self.lock:
             now_t = time.monotonic()
             if stage != self.stage:
@@ -60,11 +62,15 @@ class StageReporter:
                 self.stage, self.t_stage = stage, now_t
                 pos = f" {index}/{count}" if index and count else ""
                 log(f"  [{self.step}{'' if self.shard is None else f' shard {self.shard}'}] stage{pos}: {stage}")
-            elif now_t - self.t_write < self.min_interval and not (total and done is not None and done >= total):
+            elif (now_t - self.t_write < self.min_interval and detail == self.detail
+                  and not (total and done is not None and done >= total)):
                 return
+            if detail and detail != self.detail:
+                log(f"  [{self.step}] {stage}: {detail}")
+            self.detail = detail
             self.t_write = now_t
             info: Dict[str, Any] = {"name": stage, "index": index, "count": count, "done": done, "total": total,
-                                    "unit": unit, "elapsed_s": round(now_t - self.t_stage, 1)}
+                                    "unit": unit, "detail": detail, "elapsed_s": round(now_t - self.t_stage, 1)}
             if self.shard is not None:
                 info["shard"] = self.shard
             self._write({f"steps.{self.step}.stage": info, f"steps.{self.step}.stage_times": dict(self.times)})
@@ -133,7 +139,9 @@ def run_step(step: str, prefix: str, shard: int = 0) -> None:
         n = _run_with_stages(job_id, "prep", steps.prep.run, job, cfg, log)
         extra = {"num_shards": n, "steps.visual.total": n}
     elif step == "visual":
-        _run_with_stages(job_id, "visual", steps.visual.run, job, cfg, device, shard, log, shard=shard)
+        summary = _run_with_stages(job_id, "visual", steps.visual.run, job, cfg, device, shard, log, shard=shard)
+        if summary:
+            extra = {f"steps.visual.summary.shard{shard}": summary}
     elif step == "audio":
         steps.audio.run(job, cfg, device, log)
     elif step == "render":
@@ -167,8 +175,10 @@ def run_job(prefix: str, on_rendered=None) -> None:
 
     step_event(job_id, "visual", "running")
     for i in range(n):
-        _run_with_stages(job_id, "visual", steps.visual.run, job, cfg, device, i, log, shard=i if n > 1 else None)
-        step_event(job_id, "visual", "done", shard=i)
+        summary = _run_with_stages(job_id, "visual", steps.visual.run, job, cfg, device, i, log,
+                                   shard=i if n > 1 else None)
+        step_event(job_id, "visual", "done", shard=i,
+                   extra={f"steps.visual.summary.shard{i}": summary} if summary else None)
     _sync("up", prefix, job, ["visual/"])
     step_event(job_id, "visual", "done")
 
