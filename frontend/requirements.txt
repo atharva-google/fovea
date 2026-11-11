@@ -1,0 +1,5 @@
+# Frontend server dependencies (already satisfied if backend/requirements.txt is installed)
+fastapi>=0.110
+uvicorn[standard]>=0.29
+requests>=2.31
+google-auth>=2.29

@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fovea Studio — Smart Video Reframing</title>
+  <meta name="description" content="Turn horizontal videos into vertical (9:16), square (1:1), or any aspect ratio with intelligent speaker, action, and text framing." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- ====================================================================
+         1. LEFT SIDEBAR: Video Library (In Progress, Uploaded, Processed)
+         ==================================================================== -->
+    <aside id="sidebar" class="sidebar" aria-label="Video jobs sidebar">
+      <div class="sidebar-header">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <h1>Fovea Studio</h1>
+        </div>
+        <button id="collapse-sidebar-btn" class="icon-btn" title="Collapse sidebar" aria-label="Collapse sidebar">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="sidebar-actions">
+        <button id="new-upload-btn" class="new-upload-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
+            <path d="M12 5v14M5 12h14"/>
+          </svg>
+          <span>Upload Video</span>
+        </button>
+        <div class="search-box">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+          </svg>
+          <input id="job-search-input" type="search" class="search-input" placeholder="Filter videos..." aria-label="Filter videos" />
+        </div>
+      </div>
+
+      <div id="sidebar-job-groups" class="sidebar-scroll">
+        <!-- Group 1: In Progress / Queued -->
+        <div class="sidebar-group">
+          <div class="sidebar-group-header">
+            <span>In Progress</span>
+            <span id="count-active" class="sidebar-group-count">0</span>
+          </div>
+          <div id="list-active" class="job-list"></div>
+        </div>
+
+        <!-- Group 2: Uploaded (Not Started Yet) -->
+        <div class="sidebar-group">
+          <div class="sidebar-group-header">
+            <span>Uploaded · Not Started</span>
+            <span id="count-uploaded" class="sidebar-group-count">0</span>
+          </div>
+          <div id="list-uploaded" class="job-list"></div>
+        </div>
+
+        <!-- Group 3: Processed -->
+        <div class="sidebar-group">
+          <div class="sidebar-group-header">
+            <span>Processed</span>
+            <span id="count-completed" class="sidebar-group-count">0</span>
+          </div>
+          <div id="list-completed" class="job-list"></div>
+        </div>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="connection-row">
+          <span>Backend API</span>
+          <span id="backend-status-pill" class="conn-pill">
+            <span id="backend-status-dot" class="conn-dot"></span>
+            <span id="backend-status-text">Checking...</span>
+          </span>
+        </div>
+        <button id="open-settings-btn" class="user-settings-btn">
+          <span id="current-user-label">User: default</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+      </div>
+    </aside>
+
+    <!-- ====================================================================
+         2. CENTER MAIN WORKSPACE: Upload & Pipeline Process Status
+         ==================================================================== -->
+    <main id="main-workspace" class="main-workspace">
+      <header class="workspace-header">
+        <div class="header-left">
+          <button id="expand-sidebar-btn" class="icon-btn" title="Toggle sidebar" aria-label="Toggle sidebar" hidden>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>
+            </svg>
+          </button>
+          <div class="header-title-group">
+            <span id="workspace-video-title" class="workspace-title">Upload a Video</span>
+            <span id="workspace-status-badge" class="status-badge" hidden></span>
+          </div>
+        </div>
+
+        <div class="header-right">
+          <button id="refresh-jobs-btn" class="icon-btn" title="Refresh status" aria-label="Refresh status">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/>
+            </svg>
+          </button>
+          <button id="toggle-theme-btn" class="icon-btn" title="Switch light/dark theme" aria-label="Switch theme">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2m-7.07-14.07 1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2m-14.07 5.66-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+            </svg>
+          </button>
+          <button id="toggle-player-btn" class="drawer-toggle-btn active" title="Toggle video player panel">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="5 3 19 12 5 21 5 3"/>
+            </svg>
+            <span id="toggle-player-label">Hide Player</span>
+          </button>
+        </div>
+      </header>
+
+      <div id="workspace-content" class="workspace-content">
+        <div class="content-container">
+          <!-- VIEW A: Upload Dropzone -->
+          <section id="upload-view">
+            <div class="hero-intro">
+              <h2>Smart Video Reframing Pipeline</h2>
+              <p>Upload a video now to queue it in your library. You can configure target aspect ratios and start processing right away or later.</p>
+            </div>
+
+            <div id="dropzone-card" class="dropzone-card" tabindex="0" role="button" aria-label="Upload video file">
+              <input id="file-input" type="file" accept="video/mp4,video/quicktime,video/x-matroska,video/webm,video/*" hidden />
+              <div class="dropzone-icon">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+              </div>
+              <div class="dropzone-title">Drop a video here, or click to browse</div>
+              <div class="dropzone-sub">Supports MP4, MOV, MKV, WebM · Direct-to-storage upload</div>
+              <div id="upload-limits-bar" class="limits-bar"></div>
+
+              <div id="upload-progress-box" class="upload-progress-box" hidden>
+                <div class="upload-progress-row">
+                  <span id="upload-filename-label">Uploading...</span>
+                  <span id="upload-pct-label">0%</span>
+                </div>
+                <div class="progress-track">
+                  <div id="upload-progress-fill" class="progress-fill" style="width: 0%"></div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- VIEW B: Selected Video Configuration & Live Process Status -->
+          <section id="job-detail-view" hidden>
+            <!-- Rendered by app.js based on selected job state -->
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <!-- ====================================================================
+         3. RIGHT COLLAPSIBLE VIDEO PLAYER DRAWER
+         ==================================================================== -->
+    <aside id="video-drawer" class="video-drawer" aria-label="Video player panel">
+      <div class="drawer-header">
+        <div class="drawer-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/>
+          </svg>
+          <span>Video Preview</span>
+        </div>
+        <button id="collapse-player-btn" class="icon-btn" title="Collapse video player" aria-label="Collapse video player">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="m9 18 6-6-6-6"/>
+          </svg>
+        </button>
+      </div>
+
+      <div id="player-format-tabs" class="format-tabs">
+        <!-- Populated dynamically: Original (Local) + 9x16, 1x1, etc. -->
+      </div>
+
+      <div class="player-stage">
+        <video id="video-player" class="video-element" controls playsinline hidden></video>
+        <div id="player-empty-state" class="player-empty">
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+          </svg>
+          <p id="player-empty-text">Select a video from the sidebar to preview the source or processed outputs.</p>
+        </div>
+      </div>
+
+      <div class="player-footer">
+        <div class="player-controls-row">
+          <span id="player-time-readout" class="time-readout">00:00.0 / 00:00.0</span>
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <button id="step-back-btn" class="secondary-btn" title="Step back 1 frame (-0.04s)">-1f</button>
+            <button id="step-fwd-btn" class="secondary-btn" title="Step forward 1 frame (+0.04s)">+1f</button>
+            <select id="playback-rate-select" class="select-input" style="padding: 4px 8px; font-size: 12px;" aria-label="Playback speed">
+              <option value="0.5">0.5x</option>
+              <option value="1" selected>1.0x</option>
+              <option value="1.25">1.25x</option>
+              <option value="1.5">1.5x</option>
+              <option value="2">2.0x</option>
+            </select>
+          </div>
+        </div>
+        <a id="download-active-video-btn" class="primary-action-btn" style="text-decoration: none; width: 100%;" download hidden>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          <span id="download-btn-label">Download Video</span>
+        </a>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ======================================================================
+       USER & GEMINI KEY MODAL (Frontend-only settings per frontend/README.md)
+       ====================================================================== -->
+  <div id="settings-modal" class="modal-backdrop" hidden>
+    <div class="modal-card" role="dialog" aria-labelledby="settings-modal-title">
+      <div class="modal-header">
+        <h3 id="settings-modal-title">Workspace Settings</h3>
+        <button id="close-settings-btn" class="icon-btn" aria-label="Close settings">✕</button>
+      </div>
+      <div class="option-field">
+        <label class="option-label" for="user-id-input">User ID (scopes your videos in the backend)</label>
+        <input id="user-id-input" type="text" class="text-input" placeholder="e.g. user-123" />
+      </div>
+      <div class="option-field">
+        <label class="option-label" for="gemini-key-input">Gemini API Key (stored only in your browser)</label>
+        <input id="gemini-key-input" type="password" class="text-input" placeholder="AIza..." />
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px;">
+        <button id="save-settings-btn" class="primary-action-btn">Save Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>
