@@ -26,5 +26,5 @@ def clean_gpu_memory() -> None:
             torch.cuda.ipc_collect()
         except Exception:
             pass
-    elif hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
-        torch.mps.empty_cache()
+    elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        torch.mps.empty_cache()  # only on Apple GPUs; newer torch raises on machines without MPS
