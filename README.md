@@ -57,21 +57,20 @@ frontend/            THE WEB APP (not built yet: see its README for how it talks
 
 notebooks/                 Colab quickstart + the original research notebook
 scripts/                   upload_weights_to_hf.py (publish your model weights)
-weights/                   only a README: the model files are downloaded to the data folder
+weights/                   model files (downloaded, not in git)
 ```
 
 ### Where files go
-Fovea never writes into the code folder. On your machine and on Colab, everything it creates goes into
+Working files never go into the code folder. On your machine and on Colab, everything a run creates goes into
 **one data folder next to the code**: `../fovea_data/` (e.g. `/content/fovea_data` on Colab). Set `FOVEA_HOME`
-to put it somewhere else.
+to put it somewhere else. Model weights are part of the code setup and stay in `weights/`.
 ```
 fovea_data/
-├── weights/     model files
 ├── working/     one job folder per video (its input + all analysis), and _story/ (stored story maps)
 ├── outputs/     final videos
 └── backend/     the local backend's uploads, job folders and job records
 ```
-Each part can be moved on its own: `FOVEA_WEIGHTS_DIR`, `FOVEA_WORK_DIR`, `FOVEA_OUTPUT_DIR`, and `DATA_DIR`
+Each part can be moved on its own: `FOVEA_WORK_DIR`, `FOVEA_OUTPUT_DIR`, and `DATA_DIR`
 for the backend. On Google Cloud, job files live in the Cloud Storage bucket instead.
 
 ### How the pieces fit
@@ -148,7 +147,7 @@ python -m fovea story my_ad.mp4 -d 15 --cut-penalty 1 --arc-importance 7   # re-
 Each video gets a job folder in `fovea_data/working/<video>/`. Steps whose outputs already exist are skipped, so re-rendering a new format only re-runs `render`. Use `--force` to start over.
 
 ## Model weights
-Weights are not stored in git. They're fetched into `fovea_data/weights/` with `python -m fovea download`, from your Hugging Face repo if `FOVEA_HF_REPO` is set (publish one with `scripts/upload_weights_to_hf.py`), otherwise from the official sources. See [`weights/README.md`](weights/README.md).
+Weights are not stored in git. They're fetched into `weights/` with `python -m fovea download`, from your Hugging Face repo if `FOVEA_HF_REPO` is set (publish one with `scripts/upload_weights_to_hf.py`), otherwise from the official sources. See [`weights/README.md`](weights/README.md).
 
 | Model | License |
 |---|---|

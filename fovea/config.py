@@ -13,29 +13,40 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
+def _code_root() -> Optional[Path]:
+    """The checkout folder (the one with pyproject.toml), or None when installed as a package."""
+    root = Path(__file__).resolve().parent.parent
+    return root if (root / "pyproject.toml").exists() else None
+
+
 def fovea_home() -> Path:
-    """The ONE folder Fovea writes to on a local machine or Colab. Never the code folder.
+    """The ONE folder Fovea's working files go to on a local machine or Colab. Never the code folder.
 
         $FOVEA_HOME                 if set
         <code folder>/../fovea_data when running from a checkout (e.g. /content/fovea -> /content/fovea_data)
         ~/fovea_data                when installed as a package
 
-    Inside it: ``weights/`` (models), ``working/`` (one job folder per video, with its input, and
-    the story-map store), ``outputs/`` (final videos), ``backend/`` (the local backend's files).
-    Each can still be moved on its own with FOVEA_WEIGHTS_DIR / FOVEA_WORK_DIR / FOVEA_OUTPUT_DIR
-    (and DATA_DIR for the backend). On Google Cloud, job files live in the bucket instead.
+    Inside it: ``working/`` (one job folder per video, with its input, and the story-map store),
+    ``outputs/`` (final videos), ``backend/`` (the local backend's files). Each can still be moved
+    on its own with FOVEA_WORK_DIR / FOVEA_OUTPUT_DIR (and DATA_DIR for the backend).
+    On Google Cloud, job files live in the bucket instead.
+
+    Model weights are NOT working files: they stay with the code, in ``<code folder>/weights/``.
     """
     env = os.environ.get("FOVEA_HOME")
     if env:
         return Path(env).expanduser()
-    code_root = Path(__file__).resolve().parent.parent
-    if (code_root / "pyproject.toml").exists():
-        return code_root.parent / "fovea_data"
-    return Path.home() / "fovea_data"
+    root = _code_root()
+    return root.parent / "fovea_data" if root else Path.home() / "fovea_data"
 
 
 def default_weights_dir() -> Path:
-    return Path(os.environ.get("FOVEA_WEIGHTS_DIR") or fovea_home() / "weights")
+    """Models live with the code: ``<code folder>/weights/`` (FOVEA_WEIGHTS_DIR moves them)."""
+    env = os.environ.get("FOVEA_WEIGHTS_DIR")
+    if env:
+        return Path(env)
+    root = _code_root()
+    return root / "weights" if root else fovea_home() / "weights"
 
 
 def default_work_dir() -> Path:

@@ -1,4 +1,4 @@
-"""Where Fovea writes its files: never inside the code folder.
+"""Where Fovea writes its files: working files outside the code folder, weights with the code.
 
     python -m unittest discover -s tests -v
 """
@@ -24,16 +24,21 @@ class DataFolderTest(unittest.TestCase):
         with env():
             self.assertEqual(fovea_home(), CODE.parent / "fovea_data")
             cfg = PipelineConfig()
-            for folder in (cfg.weights_dir, cfg.work_dir, cfg.output_dir):
+            for folder in (cfg.work_dir, cfg.output_dir):
                 self.assertEqual(folder.parent, CODE.parent / "fovea_data")
                 self.assertNotIn(CODE, folder.parents)
 
-    def test_fovea_home_moves_everything(self):
+    def test_weights_stay_with_the_code(self):
+        with env():
+            self.assertEqual(PipelineConfig().weights_dir, CODE / "weights")
+        with env(FOVEA_HOME="/somewhere/else"):
+            self.assertEqual(PipelineConfig().weights_dir, CODE / "weights")
+
+    def test_fovea_home_moves_the_working_files(self):
         with env(FOVEA_HOME="/somewhere/else"):
             cfg = PipelineConfig()
-            self.assertEqual((cfg.weights_dir, cfg.work_dir, cfg.output_dir),
-                             (Path("/somewhere/else/weights"), Path("/somewhere/else/working"),
-                              Path("/somewhere/else/outputs")))
+            self.assertEqual((cfg.work_dir, cfg.output_dir),
+                             (Path("/somewhere/else/working"), Path("/somewhere/else/outputs")))
 
     def test_one_folder_can_be_moved_on_its_own(self):
         with env(FOVEA_WEIGHTS_DIR="/drive/weights"):
