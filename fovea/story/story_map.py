@@ -18,6 +18,8 @@ from .units import Unit, units_table
 
 PROMPT_VERSION = 1  # bump when STORY_PROMPT changes in a way that makes stored story maps stale
 REFORMAT_MODEL = "gemini-3.8-flash"
+REQUEST_TIMEOUT_S = 300     # no single request to Gemini may hang longer than this
+PROCESSING_TIMEOUT_S = 180  # how long Gemini may take to make an uploaded video usable
 
 STORY_PROMPT = """You are a senior video editor. Watch this video (rewatch any part as often as you need)
 and build a STORY MAP that a program will use to cut shorter versions of it (e.g. 20 s, 15 s, 10 s).
@@ -158,18 +160,20 @@ def request_story_map(video_path: str | Path, units: List[Unit], api_key: str,
     except ImportError as e:
         raise GeminiError("google-genai is not installed: pip install -U google-genai") from e
 
+    http = {"timeout": REQUEST_TIMEOUT_S * 1000}   # milliseconds
     if api_version:
-        client = genai.Client(api_key=api_key, http_options=types.HttpOptions(api_version=api_version))
-    else:
-        client = genai.Client(api_key=api_key)
+        http["api_version"] = api_version
+    client = genai.Client(api_key=api_key, http_options=types.HttpOptions(**http))
     uploaded = None
     try:
         log(f"  uploading {Path(video_path).name} to Gemini")
         uploaded = client.files.upload(file=str(video_path))
+        log("  uploaded; waiting for Gemini to make the video usable")
         waited = 0.0
         while uploaded.state and uploaded.state.name == "PROCESSING":
-            if waited > 600:
-                raise GeminiError("Gemini is still processing the uploaded video after 10 minutes")
+            if waited > PROCESSING_TIMEOUT_S:
+                raise GeminiError(f"Gemini is still processing the uploaded video after {PROCESSING_TIMEOUT_S}s; "
+                                  "run the command again")
             time.sleep(2)
             waited += 2
             uploaded = client.files.get(name=uploaded.name)
@@ -183,6 +187,8 @@ def request_story_map(video_path: str | Path, units: List[Unit], api_key: str,
             used = ""
         video_part = types.Part(file_data=file_data, media_processing=used) if used else types.Part(file_data=file_data)
 
+        log(f"  asking {model} for the story map ({used or 'standard'} video processing; "
+            f"gives up after {REQUEST_TIMEOUT_S}s)")
         t0 = time.time()
         resp = client.models.generate_content(model=model, contents=[video_part, story_prompt(units)])
         seconds = round(time.time() - t0, 1)
@@ -206,6 +212,9 @@ def request_story_map(video_path: str | Path, units: List[Unit], api_key: str,
     except GeminiError:
         raise
     except Exception as e:  # noqa: BLE001 - SDK errors can echo request details; never leak the key
+        if "timeout" in type(e).__name__.lower() or "timed out" in str(e).lower():
+            raise GeminiError(f"Gemini did not answer within {REQUEST_TIMEOUT_S}s; run the command again "
+                              "(everything analysed so far is kept)") from None
         raise GeminiError(_safe(f"Gemini call failed: {type(e).__name__}: {e}", api_key)) from None
     finally:
         if uploaded is not None:
