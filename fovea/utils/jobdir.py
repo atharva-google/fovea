@@ -97,6 +97,8 @@ class JobDir:
     def set_source(self, video_path: str | Path) -> Path:
         """Place a local video at ``input/<name>`` (symlinked to avoid copying)."""
         src = Path(video_path).resolve()
+        if not src.is_file():  # otherwise we'd create a dangling symlink and fail later, confusingly
+            raise FileNotFoundError(f"Input video not found: {video_path}")
         d = self.folder("input")
         dest = d / src.name
         if dest.is_symlink() or dest.exists():

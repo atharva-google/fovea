@@ -93,8 +93,24 @@ def h264_encoder_args(use_gpu: bool = True, quality: int = 21) -> List[str]:
     return ["-c:v", "libx264", "-preset", "veryfast", "-crf", str(quality)]
 
 
-def hwaccel_args(use_gpu: bool = True) -> List[str]:
-    return ["-hwaccel", "cuda"] if use_gpu and cuda_hwaccel_available() else []
+def hwaccel_args(use_gpu: bool = True, path: Optional[str | Path] = None) -> List[str]:
+    """``-hwaccel cuda`` when NVDEC can decode ``path``; otherwise software decoding.
+
+    Not every GPU decodes every codec (e.g. a T4 has no AV1 decoder: ffmpeg then fails with
+    "Missing Sequence Header"), so with a ``path`` we test-decode a few frames once per file.
+    """
+    if not (use_gpu and cuda_hwaccel_available()):
+        return []
+    if path is not None and not _gpu_can_decode(str(path)):
+        return []
+    return ["-hwaccel", "cuda"]
+
+
+@lru_cache(maxsize=64)
+def _gpu_can_decode(path: str) -> bool:
+    res = subprocess.run(["ffmpeg", "-v", "error", "-hwaccel", "cuda", "-i", path, "-frames:v", "5",
+                          "-f", "null", "-"], capture_output=True, text=True)
+    return res.returncode == 0
 
 
 def run_ffmpeg(args: list) -> None:
@@ -113,7 +129,7 @@ def make_proxy(source: Path, output: Path, height: int = 720, fps: float = 25.0,
     """
     vf = f"fps={fps},scale=-2:'min({int(height)},ih)'"
     run_ffmpeg([
-        *hwaccel_args(use_gpu), "-i", str(source), "-an", "-vf", vf,
+        *hwaccel_args(use_gpu, source), "-i", str(source), "-an", "-vf", vf,
         *h264_encoder_args(use_gpu, quality=23), "-g", str(int(round(fps))),
         "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output),
     ])
@@ -293,7 +309,7 @@ class FFmpegFrameReader:
         self.w, self.h = width, height
         self.nbytes = width * height * 3
         self.proc = subprocess.Popen(
-            ["ffmpeg", "-v", "error", *hwaccel_args(use_gpu), "-i", str(path),
+            ["ffmpeg", "-v", "error", *hwaccel_args(use_gpu, path), "-i", str(path),
              "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=self.nbytes * 4,
         )

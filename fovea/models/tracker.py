@@ -81,6 +81,7 @@ class PersonTracker:
     ):
         from ultralytics import YOLO
 
+        _quiet_half_warning()
         self.model = YOLO(weights_path)  # detection model, or pose model for face_backend="pose"
         self.device = device
         self.half = device == "cuda"
@@ -194,9 +195,10 @@ class PersonTracker:
     # ------------------------------------------------------------- internals
     def _process_batch(self, batch, bytetracks, raw, face_pool, pending: deque, max_pending: int) -> None:
         t0 = time.perf_counter()
+        extra = {"half": True} if self.half else {}  # passing half=False only triggers a deprecation warning
         results = self.model.predict(
             source=[img for _, _, img in batch], conf=self.conf, iou=self.iou,
-            half=self.half, device=self.device, verbose=False,
+            device=self.device, verbose=False, **extra,
         )
         t1 = time.perf_counter()
         self.seconds["yolo"] += t1 - t0
@@ -261,6 +263,19 @@ class PersonTracker:
         finally:
             with self._lock:
                 self.seconds["faces_cpu"] += time.perf_counter() - t0
+
+
+def _quiet_half_warning() -> None:
+    """Newer Ultralytics logs "'half' is deprecated" on EVERY predict call; keep the logs readable."""
+    import logging
+
+    class _Drop(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            return "'half' is deprecated" not in record.getMessage()
+
+    log = logging.getLogger("ultralytics")
+    if not any(isinstance(f, _Drop) or type(f).__name__ == "_Drop" for f in log.filters):
+        log.addFilter(_Drop())
 
 
 def _resolve(entries: List[Any]) -> List[Dict[str, Any]]:

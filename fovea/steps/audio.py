@@ -15,10 +15,12 @@ Writes: audio/vocals.wav, audio/no_vocals.wav, audio/transcript.json, audio/tran
 from __future__ import annotations
 
 import inspect
+import subprocess
 import time
 from pathlib import Path
 from typing import Tuple
 
+import numpy as np
 import pandas as pd
 
 from ..config import PipelineConfig
@@ -58,12 +60,12 @@ def separate_vocals(audio_path: Path, out_dir: Path, device: str) -> Tuple[Path,
     but in this process: no Python start-up, no model reload, no temp folders."""
     import torch
     from demucs.apply import apply_model
-    from demucs.audio import AudioFile, save_audio
     from demucs.pretrained import get_model
 
     model = get_model("htdemucs")
     model.eval()
-    wav = AudioFile(Path(audio_path)).read(streams=0, samplerate=model.samplerate, channels=model.audio_channels)
+    # decoded with ffmpeg ourselves: demucs.audio needs torchaudio's I/O backends, which newer torchaudio dropped
+    wav = torch.from_numpy(load_audio(audio_path, model.samplerate, model.audio_channels).T.copy())
 
     ref = wav.mean(0)
     mean, std = ref.mean(), ref.std()
@@ -80,8 +82,8 @@ def separate_vocals(audio_path: Path, out_dir: Path, device: str) -> Tuple[Path,
     no_vocals_t = torch.stack(stems).sum(0)
 
     vocals, no_vocals = out_dir / "vocals.wav", out_dir / "no_vocals.wav"
-    save_audio(vocals_t, str(vocals), samplerate=model.samplerate, clip="rescale")
-    save_audio(no_vocals_t, str(no_vocals), samplerate=model.samplerate, clip="rescale")
+    write_wav(vocals, vocals_t.cpu().numpy().T, model.samplerate)
+    write_wav(no_vocals, no_vocals_t.cpu().numpy().T, model.samplerate)
     del model, sources, stems, wav
     clean_gpu_memory()
     return vocals, no_vocals
@@ -93,6 +95,9 @@ def transcribe(audio_path: Path, model_dir: Path, device: str, batch_size: int =
     wdevice = "cuda" if device == "cuda" else "cpu"  # CTranslate2 has no Apple MPS support
     model = WhisperModel(str(model_dir), device=wdevice, compute_type="float16" if wdevice == "cuda" else "int8")
     options = dict(vad_filter=True, word_timestamps=True, temperature=0.0, condition_on_previous_text=False)
+    # 16 kHz mono float32 decoded with ffmpeg: passing a file path makes faster-whisper decode with PyAV,
+    # and newer PyAV releases break its decoder ("open() got an unexpected keyword argument 'metadata_errors'")
+    audio = load_audio(audio_path, 16000, 1)[:, 0]
     try:
         from faster_whisper import BatchedInferencePipeline  # faster-whisper >= 1.1
     except ImportError:
@@ -104,9 +109,9 @@ def transcribe(audio_path: Path, model_dir: Path, device: str, batch_size: int =
         bs = batch_size or (16 if wdevice == "cuda" else 4)
         accepted = inspect.signature(pipe.transcribe).parameters
         kwargs = {k: v for k, v in options.items() if k in accepted}
-        segments, _ = pipe.transcribe(str(audio_path), batch_size=bs, **kwargs)
+        segments, _ = pipe.transcribe(audio, batch_size=bs, **kwargs)
     else:  # old faster-whisper: sequential 30 s sliding window
-        segments, _ = model.transcribe(str(audio_path), **options)
+        segments, _ = model.transcribe(audio, **options)
 
     rows = [{
         "audio_segment_id": i,
@@ -120,3 +125,23 @@ def transcribe(audio_path: Path, model_dir: Path, device: str, batch_size: int =
     del pipe, model
     clean_gpu_memory()
     return pd.DataFrame(rows)
+
+
+def load_audio(path: Path, samplerate: int, channels: int) -> np.ndarray:
+    """Decode any audio/video file with ffmpeg -> float32 array of shape (samples, channels)."""
+    res = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-i", str(path), "-vn", "-f", "f32le",
+                          "-ac", str(channels), "-ar", str(samplerate), "-"], capture_output=True)
+    if res.returncode != 0:
+        raise RuntimeError(f"ffmpeg could not decode {path}:\n{res.stderr.decode(errors='ignore')[-1500:]}")
+    return np.frombuffer(res.stdout, np.float32).reshape(-1, channels)
+
+
+def write_wav(path: Path, audio: np.ndarray, samplerate: int) -> Path:
+    """16-bit PCM wav, scaled down if it would clip (same as Demucs' default ``clip="rescale"``)."""
+    from scipy.io import wavfile
+
+    audio = np.asarray(audio, np.float32)
+    peak = float(np.abs(audio).max()) if audio.size else 0.0
+    audio = audio / max(1.01 * peak, 1.0)
+    wavfile.write(str(path), samplerate, (audio * 32767).astype(np.int16))
+    return Path(path)
