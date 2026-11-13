@@ -3,6 +3,7 @@
     python -m fovea run input.mp4                       # 9:16 vertical
     python -m fovea run input.mp4 -t 9:16 1:1 4:5       # several formats, one analysis
     python -m fovea run input.mp4 -t 720x720            # exact pixel size
+    python -m fovea run input.mp4 -t 9:16 --cut 15 10   # + 15 s and 10 s cutdowns (needs a Gemini key once per video)
     python -m fovea story input.mp4 -d 15 10            # story map + proposed cuts (prints, renders nothing)
     python -m fovea download [--all]                    # fetch model weights
     python -m fovea weights                             # show which weights are present
@@ -66,6 +67,18 @@ def _build_parser() -> argparse.ArgumentParser:
     f.add_argument("--pan-window", type=int, default=d.pan_window_frames, dest="pan_window_frames")
     f.add_argument("--cut-threshold", type=float, default=d.cut_threshold_px, dest="cut_threshold_px")
     f.add_argument("--deadband", type=float, default=d.still_deadband_px, dest="still_deadband_px")
+
+    c = r.add_argument_group("cutdowns (shorter versions; see `fovea story`)")
+    c.add_argument("--cut", nargs="+", type=float, default=[], dest="cut_durations", metavar="SECONDS",
+                   help="Also render cutdowns of these lengths, e.g. --cut 15 10")
+    c.add_argument("--cut-modes", nargs="+", choices=["synced", "cutaway"], default=d.cut_modes,
+                   help="synced = sound stays with its picture; cutaway = other pictures may cover a line (default: both)")
+    c.add_argument("--gemini-key", default=None,
+                   help="Gemini API key (or set GEMINI_API_KEY). Only needed the first time a video file is seen")
+    c.add_argument("--cut-penalty", type=float, default=None, help="Higher = fewer, longer pieces (default 3)")
+    c.add_argument("--arc-importance", type=float, default=None,
+                   help="Units Gemini scores at or above this are always kept (default 8)")
+    c.add_argument("--no-hook", action="store_true", help="Never move Gemini's hook to the front")
 
     m = r.add_argument_group("misc")
     m.add_argument("--debug-renders", action="store_true", help="Write annotated tracking/motion videos")
@@ -153,8 +166,16 @@ def main(argv=None) -> None:
         focal_strategy=args.focal_strategy, pan_window_frames=args.pan_window_frames,
         cut_threshold_px=args.cut_threshold_px, still_deadband_px=args.still_deadband_px,
         debug_renders=args.debug_renders, force=args.force,
+        cut_durations=args.cut_durations, cut_modes=args.cut_modes,
+        cut_params={k: v for k, v in (("cut_penalty", args.cut_penalty), ("arc_importance", args.arc_importance),
+                                      ("use_hook", False if args.no_hook else None)) if v is not None},
     )
-    outputs = run(args.video, cfg)
+    from .steps.story import StoryKeyRequired
+
+    try:
+        outputs = run(args.video, cfg, gemini_api_key=args.gemini_key)
+    except StoryKeyRequired as e:
+        raise SystemExit(str(e)) from None
     print("\nDone:")
     for o in outputs:
         print(f"  {o}")

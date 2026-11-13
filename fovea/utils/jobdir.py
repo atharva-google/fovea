@@ -18,8 +18,8 @@ only has to copy a step's inputs down, run it, and copy its outputs up.
     prep/story_map.json         cutdowns: Gemini's story map of those units (fovea/story/story_map.py)
     visual/shard_000.pkl        per-shard analysis (tracks, motion, OCR, speaker scores)
     audio/                      vocals.wav, no_vocals.wav, transcript.json, transcript.csv
-    framing/                    focal_points.csv, trajectory_<label>.csv
-    outputs/<label>.mp4         final videos
+    framing/                    focal_points.csv, trajectory_<label>.csv, cuts.json (the pieces of every cutdown)
+    outputs/<label>.mp4         final videos; cutdowns are <label>_<seconds>s_<mode>.mp4
     debug/                      optional annotated videos
 """
 

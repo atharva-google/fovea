@@ -2,12 +2,14 @@
 
     prep ──┬── visual (each shard) ── render ──> videos
            └── audio (optional, background thread) ──> transcript
+    cutdowns (``cut_durations``): ... ── story (units + Gemini story map, or the stored one) ── render the cuts
 
 The backend (backend/) calls exactly the same ``steps.*.run()`` functions.
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -30,13 +32,18 @@ def _step(name: str):
     print(f"  ✓ {name} ({time.time() - t0:.1f}s)", flush=True)
 
 
-def run(video_path: str | Path, config: Optional[PipelineConfig] = None, **overrides: Any) -> List[Path]:
+def run(video_path: str | Path, config: Optional[PipelineConfig] = None, gemini_api_key: Optional[str] = None,
+        **overrides: Any) -> List[Path]:
     """Reframe ``video_path`` into every format in ``config.targets``.
 
     Example::
 
         from fovea import run
         run("input.mp4", targets=["9:16", "1:1"])
+        run("input.mp4", targets=["9:16"], cut_durations=[15, 10])   # + 15 s and 10 s cutdowns
+
+    Cutdowns need a Gemini key (``gemini_api_key`` or $GEMINI_API_KEY) only the first time a video
+    file is seen; after that its stored story map is used.
     """
     cfg = (config or PipelineConfig()).update(overrides)
     for t in cfg.targets:
@@ -48,6 +55,21 @@ def run(video_path: str | Path, config: Optional[PipelineConfig] = None, **overr
     job.set_source(video_path)
     job.write_json(job.job_json, {"config": {"targets": cfg.targets}})
     print(f"Fovea | device={device} | job folder: {job.root}")
+
+    key = gemini_api_key or os.environ.get("GEMINI_API_KEY")
+    need_story = False
+    if cfg.cut_durations:
+        fp, stored_units, _ = steps.story.lookup(job, cfg)
+        need_story = stored_units is None
+        # The folder is named after the file name: never cut a video using another file's analysis.
+        if job.video_info.exists() and job.read_json(job.video_info).get("sha256") not in (None, fp):
+            print("  this folder holds the analysis of a different file with the same name: re-running it")
+            cfg.force = True
+        if need_story and not key:   # fail now, not after minutes of analysis
+            raise steps.story.StoryKeyRequired(
+                "Cutdowns need a Gemini key the first time a video is seen: pass --gemini-key or set GEMINI_API_KEY")
+        if need_story:
+            cfg.transcribe = True    # the units are built from the transcript
 
     with _step("1/4 prep"):
         n_shards = steps.prep.run(job, cfg)
@@ -64,6 +86,10 @@ def run(video_path: str | Path, config: Optional[PipelineConfig] = None, **overr
 
     with _step("4/4 render"):
         rendered = steps.render.run(job, cfg)
+
+    if cfg.cut_durations:
+        with _step("cutdowns"):
+            rendered.update(_render_cuts(job, cfg, key, audio_future if need_story else None))
 
     # The final videos stay in the video's own folder (<video name>/outputs/<format>.mp4).
     # Only when an output folder was asked for are they also copied there.
@@ -85,3 +111,23 @@ def run(video_path: str | Path, config: Optional[PipelineConfig] = None, **overr
             print(f"  ✗ audio step failed: {e}")
     pool.shutdown(wait=False)
     return outputs
+
+
+def _render_cuts(job: JobDir, cfg: PipelineConfig, key: Optional[str], audio_future) -> dict:
+    """Story map (stored or new) -> cuts picked by code -> rendered. A failure here is reported and
+    leaves the full-length videos untouched."""
+    from .story.report import format_cuts, make_cuts
+
+    try:
+        if audio_future is not None:
+            print("  waiting for the transcript", flush=True)
+            audio_future.result()
+        story = steps.story.run(job, cfg, key)
+        cuts = make_cuts(story["units"], story["record"]["story_map"], cfg.cut_durations, cfg.cut_modes,
+                         **cfg.cut_params)
+        job.write_json(job.framing_dir / "cuts.json", cuts)
+        print(format_cuts(cuts), flush=True)
+        return steps.render.run_cuts(job, cfg, cuts)
+    except Exception as e:  # noqa: BLE001 - the full-length videos are done; don't fail the run
+        print(f"  ✗ cutdowns failed: {type(e).__name__}: {e}", flush=True)
+        return {}

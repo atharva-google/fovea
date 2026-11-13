@@ -122,13 +122,16 @@ run("in.mp4", targets=["9:16", "1:1"], transcribe=True)
 ## Cutdowns: story map (work in progress)
 Shorter versions of a video are cut from a **story map**: the video is chopped into small exact pieces
 ("units"), Gemini watches it once and scores / links the units, and code picks units for a target length.
-For now this only **prints** the units, Gemini's map and the proposed cuts; it does not render them yet.
 ```bash
 pip install -r requirements.txt && python -m fovea download --all   # needs Whisper + Demucs + google-genai
 export GEMINI_API_KEY=...                         # only needed the first time a video file is seen
-python -m fovea story my_ad.mp4 -d 15 10          # proposed 15 s and 10 s cuts, synced and cutaway
-python -m fovea story my_ad.mp4 -d 15 --cut-penalty 1 --arc-importance 7   # re-pick with other settings
+python -m fovea run my_ad.mp4 -t 9:16 --cut 15 10 # full-length 9:16 + 15 s and 10 s cutdowns, synced and cutaway
+# → ../fovea_data/my_ad/outputs/9x16.mp4, 9x16_15s_synced.mp4, 9x16_15s_cutaway.mp4, 9x16_10s_synced.mp4, ...
+python -m fovea run my_ad.mp4 -t 9:16 --cut 15 --cut-penalty 1 --arc-importance 7   # re-cut with other settings
+python -m fovea story my_ad.mp4 -d 15 10          # only PRINT the units, Gemini's map and the cuts (no render)
 ```
+- The pieces of every cutdown are saved in `fovea_data/<video name>/framing/cuts.json`. Sound is cut with the
+  picture, with a few-millisecond fade at each join (music is not treated specially yet).
 - Units and story map are stored in the video's own folder: `fovea_data/<video name>/prep/units.json` and
   `story_map.json`. The same file always reuses them: no analysis, no Gemini call, no key. `--refresh` asks Gemini
   again. A different video with the same file name does not inherit them (they are tied to the file's SHA-256).

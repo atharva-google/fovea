@@ -7,6 +7,9 @@
 
 Reads:  input/<video>, prep/*, visual/*
 Writes: framing/*.csv, outputs/<label>.mp4, debug/*.mp4 (optional)
+
+Cutdowns (``run_cuts``, after ``run``): the same crop along the same camera path, but only for the
+pieces of a cut, each with its own sound          -> outputs/<label>_<seconds>s_<mode>.mp4
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import cv2
 import numpy as np
@@ -26,9 +29,10 @@ from ..config import PipelineConfig
 from ..framing import CropGeometry, OutputTarget, find_focal_points_rules, find_focal_points_viterbi, plan_camera
 from ..models.ocr import records_to_df
 from ..models.speakers import attach_speaking_scores
+from ..story.edit import decode_args, encode_args, frame_plan
 from ..utils.jobdir import JobDir
 from ..utils.progress import Counter, Progress, noop
-from ..utils.video import FFmpegFrameReader, VideoInfo, h264_encoder_args
+from ..utils.video import FFmpegFrameReader, VideoInfo, h264_encoder_args, hwaccel_args
 
 
 def run(job: JobDir, cfg: PipelineConfig, log=print, progress: Optional[Progress] = None) -> Dict[str, str]:
@@ -132,6 +136,108 @@ def render_reframed(source: str | Path, src: VideoInfo, trajectory_df: pd.DataFr
             reader.close()
             if encoder.stdin and not encoder.stdin.closed:
                 encoder.stdin.close()
+            rc = encoder.wait()
+        if rc != 0:
+            err.seek(0)
+            raise RuntimeError(f"FFmpeg encode failed:\n{err.read().decode(errors='ignore')[-2000:]}")
+    return output_path
+
+
+# =========================================================================== cutdowns
+def run_cuts(job: JobDir, cfg: PipelineConfig, cuts: Dict[str, Dict[str, Any]], log=print,
+             progress: Optional[Progress] = None) -> Dict[str, str]:
+    """Render every usable cut in every output format. Call after ``run`` (it wrote the camera paths).
+
+    ``cuts`` is what ``fovea.story.report.make_cuts`` returns: ``{"15s_synced": {"pieces", "stats"}}``.
+    Returns {label: output path}, e.g. {"9x16_15s_synced": ".../outputs/9x16_15s_synced.mp4"}.
+    A cut that fails is reported and skipped; the others are still rendered.
+    """
+    progress = progress or noop
+    src, proxy, has_audio = job.video_infos()
+    todo = [(name, c) for name, c in cuts.items() if c["pieces"] and c["stats"]["ok"] and not c.get("same_as")]
+    outputs: Dict[str, str] = {}
+    n_stages, stage = len(todo) * len(cfg.targets), 0
+    for spec in cfg.targets:
+        target = OutputTarget.parse(spec)
+        geom = CropGeometry.build(src.width, src.height, target, cfg.short_side)
+        traj = pd.read_csv(job.framing_dir / f"trajectory_{target.label}.csv")
+        for name, cut in todo:
+            stage += 1
+            label = f"{target.label}_{name}"
+            out = job.outputs_dir / f"{label}.mp4"
+            frames = sum(count for _, count, _ in frame_plan(cut["pieces"], src.fps, src.total_frames or 0))
+            counter = Counter(progress, f"encode {label}", frames, "frames", stage, n_stages)
+            t = time.time()
+            try:
+                render_pieces(job.source, src, traj, geom, cut["pieces"], out, analysis_fps=proxy.fps,
+                              use_gpu=cfg.use_gpu_video, has_audio=has_audio, on_frames=counter.add)
+            except Exception as e:  # noqa: BLE001 - one bad cut must not lose the others
+                log(f"  ✗ {label}: {e}")
+                continue
+            outputs[label] = str(out)
+            log(f"  {label}: {frames / src.fps:.1f}s in {len(cut['pieces'])} piece(s) ({time.time() - t:.1f}s) -> {out}")
+    return outputs
+
+
+def render_pieces(source: str | Path, src: VideoInfo, trajectory_df: pd.DataFrame, geometry: CropGeometry,
+                  pieces: List[Dict[str, Any]], output_path: str | Path, analysis_fps: float = 25.0,
+                  use_gpu: bool = True, has_audio: bool = True,
+                  on_frames: Optional[Callable[[int], None]] = None) -> Path:
+    """Write one cut: for every piece, its frames cropped along the camera path, with the piece's sound.
+
+    Each piece is ``{"video_start", "audio_start", "length"}`` in source seconds. Lengths are rounded
+    to whole source frames and the sound is cut to the same lengths (``fovea/story/edit.py``).
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fps = src.fps or analysis_fps
+    plan = frame_plan(pieces, fps, src.total_frames or 0)
+
+    frames = trajectory_df["frame_idx"].astype(int).to_numpy()
+    n = int(frames.max()) + 1 if len(frames) else 1
+    cx_lookup = np.full(n, geometry.src_w / 2.0)
+    cx_lookup[frames] = trajectory_df["smoothed_cx"].to_numpy(dtype=np.float64)
+    ratio = analysis_fps / fps
+    out_w, out_h = geometry.out_w, geometry.out_h
+    nbytes = src.width * src.height * 3
+
+    with tempfile.TemporaryFile() as err:
+        encoder = subprocess.Popen(
+            encode_args(source, out_w, out_h, fps, plan, output_path, h264_encoder_args(use_gpu), has_audio),
+            stdin=subprocess.PIPE, stderr=err)
+        try:
+            for first, count, _ in plan:
+                reader = subprocess.Popen(decode_args(source, first, count, fps, hwaccel_args(use_gpu, source)),
+                                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=nbytes * 4)
+                got, last = 0, None
+                try:
+                    while got < count:
+                        buf = reader.stdout.read(nbytes)
+                        if len(buf) < nbytes:
+                            break
+                        frame = np.frombuffer(buf, np.uint8).reshape(src.height, src.width, 3)
+                        x1, y1, x2, y2 = geometry.window(cx_lookup[min(int(round((first + got) * ratio)), n - 1)])
+                        last = cv2.resize(frame[y1:y2, x1:x2], (out_w, out_h), interpolation=cv2.INTER_LANCZOS4).tobytes()
+                        encoder.stdin.write(last)
+                        got += 1
+                finally:
+                    if reader.poll() is None:
+                        reader.kill()
+                    reader.wait()
+                if last is None:
+                    raise RuntimeError(f"could not read the source video at {first / fps:.2f}s")
+                for _ in range(count - got):   # the source ended a little early: hold the last frame, keep the length
+                    encoder.stdin.write(last)
+                if on_frames:
+                    on_frames(count)
+        except BrokenPipeError:
+            pass
+        finally:
+            if encoder.stdin and not encoder.stdin.closed:
+                try:
+                    encoder.stdin.close()
+                except BrokenPipeError:
+                    pass
             rc = encoder.wait()
         if rc != 0:
             err.seek(0)

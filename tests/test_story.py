@@ -256,6 +256,14 @@ class ReportTest(unittest.TestCase):
         self.assertIn("=== 5s_cutaway", text)
         self.assertIn("sound from", text)
 
+    def test_a_cutaway_cut_identical_to_the_synced_one_is_marked_not_duplicated(self):
+        units, smap, *_ = example()
+        self.assertNotIn("same_as", make_cuts(units, smap, [5.0], ["synced", "cutaway"])["5s_cutaway"])
+        smap["cutaways"] = []                               # no picture can cover any line
+        cuts = make_cuts(units, smap, [5.0], ["synced", "cutaway"])
+        self.assertEqual(cuts["5s_cutaway"]["same_as"], "5s_synced")
+        self.assertIn("same as 5s_synced", format_cuts(cuts))
+
 
 if __name__ == "__main__":
     unittest.main()

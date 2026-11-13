@@ -24,6 +24,10 @@ def make_cuts(units: List[Unit], story_map: Dict[str, Any], durations: Sequence[
                 continue
             pieces, stats = select_units(units, story_map, target, mode, **params)
             cuts[name] = {"pieces": [p.to_dict() for p in pieces], "stats": stats}
+            # No picture could cover a line: the cutaway cut is the synced cut. Say so; don't render it twice.
+            twin = cuts.get(f"{target:g}s_synced")
+            if mode == "cutaway" and twin and twin["pieces"] == cuts[name]["pieces"]:
+                cuts[name]["same_as"] = f"{target:g}s_synced"
     return cuts
 
 
@@ -73,6 +77,8 @@ def format_cuts(cuts: Dict[str, Dict[str, Any]]) -> str:
         stats = cut["stats"]
         notes = f"  [{'; '.join(stats['notes'])}]" if stats["notes"] else ""
         flag = "" if stats["ok"] or not cut["pieces"] else "  NOT USABLE"
+        if cut.get("same_as"):
+            flag += f"  (same as {cut['same_as']}: no picture could cover a line)"
         lines.append(f"=== {name}: {stats['total']:g}s in {len(cut['pieces'])} piece(s){flag}{notes}")
         for p in cut["pieces"]:
             where = f"{p['video_start']:6.2f}s"

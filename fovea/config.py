@@ -141,6 +141,10 @@ class PipelineConfig:
     gemini_api_version: str = "v1beta"  # what the experiment ran on; newer google-genai releases default to "v1"
     gemini_video_processing: str = "AGENTIC"  # "AGENTIC" (Gemini may rewatch parts) | "STATIC"
     refresh_story: bool = False  # ask Gemini again even if this video's folder already holds its story map
+    # Cutdowns to render next to the full-length outputs: every duration x mode x target becomes a video.
+    cut_durations: List[float] = field(default_factory=list)  # seconds, e.g. [15, 10]; empty = no cutdowns
+    cut_modes: List[str] = field(default_factory=lambda: ["synced", "cutaway"])
+    cut_params: Dict[str, Any] = field(default_factory=dict)  # selector settings (fovea/story/select.py), e.g. {"cut_penalty": 1}
 
     # ------------------------------------------------------------------ limits
     max_duration_s: Optional[float] = None  # reject longer videos (demo mode)
@@ -160,6 +164,11 @@ class PipelineConfig:
             raise ValueError("focal_strategy must be 'viterbi' or 'rules'")
         if self.face_backend not in ("mediapipe", "pose"):
             raise ValueError("face_backend must be 'mediapipe' or 'pose'")
+        self.cut_durations = [float(d) for d in self.cut_durations]
+        if any(d <= 0 for d in self.cut_durations):
+            raise ValueError("cut_durations must be positive numbers of seconds")
+        if not self.cut_modes or any(m not in ("synced", "cutaway") for m in self.cut_modes):
+            raise ValueError("cut_modes must be 'synced' and/or 'cutaway'")
         self.detect_every = max(1, int(self.detect_every))
         self.max_shards = max(1, int(self.max_shards))
         for name in ("visual_workers", "ocr_workers", "motion_workers", "whisper_batch_size"):
