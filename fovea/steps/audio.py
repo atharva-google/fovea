@@ -26,6 +26,7 @@ import pandas as pd
 from ..config import PipelineConfig
 from ..utils.device import clean_gpu_memory
 from ..utils.jobdir import JobDir
+from ..utils.transcript import last_word_end, transcript_problems
 from ..utils.weights import ensure_for
 
 
@@ -49,7 +50,7 @@ def run(job: JobDir, cfg: PipelineConfig, device: str, log=print) -> None:
     log(f"  demucs done ({time.time() - t:.1f}s)")
 
     t = time.time()
-    transcript = transcribe(vocals, whisper_dir, device, cfg.whisper_batch_size)
+    transcript = transcribe(vocals, whisper_dir, device, cfg.whisper_batch_size, log)
     log(f"  whisper done ({time.time() - t:.1f}s), {len(transcript)} segments")
     transcript.to_csv(job.audio_dir / "transcript.csv", index=False)
     job.write_json(out_json, transcript.to_dict("records"))
@@ -89,7 +90,7 @@ def separate_vocals(audio_path: Path, out_dir: Path, device: str) -> Tuple[Path,
     return vocals, no_vocals
 
 
-def transcribe(audio_path: Path, model_dir: Path, device: str, batch_size: int = 0) -> pd.DataFrame:
+def transcribe(audio_path: Path, model_dir: Path, device: str, batch_size: int = 0, log=print) -> pd.DataFrame:
     from faster_whisper import WhisperModel
 
     wdevice = "cuda" if device == "cuda" else "cpu"  # CTranslate2 has no Apple MPS support
@@ -113,7 +114,37 @@ def transcribe(audio_path: Path, model_dir: Path, device: str, batch_size: int =
     else:  # old faster-whisper: sequential 30 s sliding window
         segments, _ = model.transcribe(audio, **options)
 
-    rows = [{
+    rows = _rows(segments)
+
+    # Whisper can get stuck repeating one character or word; everything after that point in the chunk
+    # is then lost. If the transcript looks like that, decode once more in a safer (slower) mode:
+    # no batching, retries at higher temperatures, and repeats penalised.
+    problems = transcript_problems(rows)
+    if problems:
+        seconds = len(audio) / 16000
+        log(f"  transcript looks broken ({'; '.join(problems)}); it reaches {last_word_end(rows):.1f}s of "
+            f"{seconds:.1f}s. Trying again in a safer mode")
+        safe = dict(options, temperature=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0], no_repeat_ngram_size=3,
+                    repetition_penalty=1.1)
+        accepted = inspect.signature(model.transcribe).parameters
+        segments, _ = model.transcribe(audio, **{k: v for k, v in safe.items() if k in accepted})
+        retry = _rows(segments)
+        retry_problems = transcript_problems(retry)
+        if not retry_problems or last_word_end(retry) > last_word_end(rows):
+            rows, problems = retry, retry_problems
+        if problems:
+            log(f"  WARNING: the transcript is still unreliable ({'; '.join(problems)}); it reaches "
+                f"{last_word_end(rows):.1f}s of {seconds:.1f}s. Anything built from it (units, cutdowns) will "
+                f"be poor. A larger model may help: --whisper-model large-v3")
+        else:
+            log(f"  second attempt looks fine: {len(rows)} segments, reaching {last_word_end(rows):.1f}s")
+    del pipe, model
+    clean_gpu_memory()
+    return pd.DataFrame(rows)
+
+
+def _rows(segments) -> list:
+    return [{
         "audio_segment_id": i,
         "start_s": float(seg.start),
         "end_s": float(seg.end),
@@ -122,9 +153,6 @@ def transcribe(audio_path: Path, model_dir: Path, device: str, batch_size: int =
         "words_data": [{"start": w.start, "end": w.end, "word": w.word.strip(),
                         "probability": round(w.probability, 5)} for w in (seg.words or [])],
     } for i, seg in enumerate(segments)]
-    del pipe, model
-    clean_gpu_memory()
-    return pd.DataFrame(rows)
 
 
 def load_audio(path: Path, samplerate: int, channels: int) -> np.ndarray:
