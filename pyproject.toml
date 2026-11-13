@@ -26,6 +26,7 @@ dependencies = [
 
 [project.optional-dependencies]
 transcribe = ["faster-whisper>=1.1.0", "demucs"]
+story = ["faster-whisper>=1.1.0", "demucs", "google-genai"]
 
 [project.scripts]
 fovea = "fovea.cli:main"

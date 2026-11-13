@@ -3,6 +3,7 @@
     python -m fovea run input.mp4                       # 9:16 vertical
     python -m fovea run input.mp4 -t 9:16 1:1 4:5       # several formats, one analysis
     python -m fovea run input.mp4 -t 720x720            # exact pixel size
+    python -m fovea story input.mp4 -d 15 10            # story map + proposed cuts (prints, renders nothing)
     python -m fovea download [--all]                    # fetch model weights
     python -m fovea weights                             # show which weights are present
 """
@@ -68,6 +69,39 @@ def _build_parser() -> argparse.ArgumentParser:
     m.add_argument("--debug-renders", action="store_true", help="Write annotated tracking/motion videos")
     m.add_argument("--force", action="store_true", help="Recompute every stage even if outputs exist")
 
+    # -------------------------------------------------------------- story
+    st = sub.add_parser("story", help="Story map for cutdowns: units, Gemini's map, and the cuts picked from it "
+                                      "(prints only, renders nothing)")
+    st.add_argument("video", help="Path to the input video")
+    st.add_argument("-d", "--durations", nargs="+", type=float, default=[15.0],
+                    help="Target lengths in seconds to pick cuts for (default: 15)")
+    st.add_argument("--modes", nargs="+", choices=["synced", "cutaway"], default=["synced", "cutaway"],
+                    help="synced = sound stays with its picture; cutaway = other pictures may cover a line")
+    st.add_argument("--gemini-key", default=None,
+                    help="Gemini API key (or set GEMINI_API_KEY). Only needed the first time a video file is seen")
+    st.add_argument("--gemini-model", default=d.gemini_model)
+    st.add_argument("--video-processing", choices=["AGENTIC", "STATIC"], default=d.gemini_video_processing,
+                    dest="gemini_video_processing")
+    st.add_argument("--refresh", action="store_true", help="Ask Gemini again even if a story map is stored")
+    st.add_argument("--json", type=Path, default=None, dest="json_out",
+                    help="Also write units, story map and cuts to this JSON file")
+    st.add_argument("--work-dir", type=Path, default=d.work_dir)
+    st.add_argument("--weights-dir", type=Path, default=d.weights_dir)
+    st.add_argument("--story-dir", type=Path, default=None, help="Where story maps are stored (default: <work-dir>/_story)")
+    st.add_argument("--device", choices=["cuda", "mps", "cpu"], default=None)
+    st.add_argument("--whisper-model", default=d.whisper_model)
+    k = st.add_argument_group("selector (change and re-run: no Gemini call, no re-analysis)")
+    k.add_argument("--cut-penalty", type=float, default=3.0, help="Higher = fewer, longer pieces (default 3)")
+    k.add_argument("--arc-importance", type=float, default=8.0,
+                   help="Units Gemini scores at or above this are always kept (default 8)")
+    k.add_argument("--min-importance", type=float, default=1.0, help="Units below this are never picked (default 1)")
+    k.add_argument("--imp-power", type=float, default=1.5, help="Higher = importance outweighs length more (default 1.5)")
+    k.add_argument("--dur-power", type=float, default=0.5)
+    k.add_argument("--tolerance", type=float, default=0.1, help="How far under the target still counts as on target")
+    k.add_argument("--over-tolerance", type=float, default=0.15,
+                   help="How far over the target optional material may go (the story itself may go further)")
+    k.add_argument("--no-hook", action="store_true", help="Never move Gemini's hook to the front")
+
     # ----------------------------------------------------------- download
     dl = sub.add_parser("download", help="Download model weights")
     dl.add_argument("--weights-dir", type=Path, default=d.weights_dir)
@@ -99,6 +133,10 @@ def main(argv=None) -> None:
             print(f"{mark} {row['key']:<10} {row['used_by']:<11} {row['license']:<11} {row['path']}")
         return
 
+    if args.command == "story":
+        _story(args)
+        return
+
     from .pipeline import run
 
     cfg = PipelineConfig(
@@ -118,6 +156,83 @@ def main(argv=None) -> None:
     print("\nDone:")
     for o in outputs:
         print(f"  {o}")
+
+
+def _story(args) -> None:
+    """``fovea story``: stored story map if this file was seen before, else analysis + one Gemini call."""
+    import json
+    import os
+
+    from .story.report import format_cuts, format_story, make_cuts
+    from .story.store import StoryStore, default_root, fingerprint
+
+    video = Path(args.video)
+    if not video.is_file():
+        raise SystemExit(f"Input video not found: {video}")
+    cfg = PipelineConfig(
+        weights_dir=args.weights_dir, work_dir=args.work_dir, story_dir=args.story_dir, device=args.device,
+        transcribe=True, whisper_model=args.whisper_model, gemini_model=args.gemini_model,
+        gemini_video_processing=args.gemini_video_processing, refresh_story=args.refresh,
+    )
+    fp = fingerprint(video)
+    found = None if cfg.refresh_story else StoryStore(default_root(cfg)).load(fp)
+    if found:
+        units, record = found
+        print(f"Story map for {video.name} found in the store ({fp[:12]}): no analysis, no Gemini call\n")
+    else:
+        key = args.gemini_key or os.environ.get("GEMINI_API_KEY")
+        if not key:
+            raise SystemExit("No story map is stored for this video yet, so a Gemini key is needed: "
+                             "pass --gemini-key or set GEMINI_API_KEY")
+        from . import steps
+        from .steps import story
+        from .utils.device import get_device
+        from .utils.jobdir import JobDir
+
+        device = get_device(cfg.device)
+        job = JobDir(cfg.work_dir / video.stem)
+        job.set_source(video)
+        # Job folders are named after the file name. If this folder was analysed for a DIFFERENT file with
+        # the same name, its results must not end up in this file's story map: redo the analysis.
+        marker = job.path("input.sha256")
+        if marker.exists() and marker.read_text().strip() != fp:
+            print("  this job folder holds the analysis of a different file with the same name: re-running it")
+            cfg.force = True
+        marker.write_text(fp)
+        if not job.job_json.exists():
+            job.write_json(job.job_json, {"config": {"targets": cfg.targets}})
+        print(f"Fovea story | device={device} | job folder: {job.root}")
+        print("▶ analysis: prep, visual, audio (steps already done for this job folder are skipped)", flush=True)
+        for i in range(steps.prep.run(job, cfg)):
+            steps.visual.run(job, cfg, device, i)
+        steps.audio.run(job, cfg, device)
+        print("▶ story map", flush=True)
+        try:
+            out = story.run(job, cfg, key)
+        except Exception as e:  # noqa: BLE001 - show the reason, not a stack trace
+            raise SystemExit(f"Story map failed: {e}") from None
+        units, record = out["units"], out["record"]
+        print()
+
+    cuts = make_cuts(units, record["story_map"], args.durations, args.modes,
+                     cut_penalty=args.cut_penalty, arc_importance=args.arc_importance,
+                     min_importance=args.min_importance, imp_power=args.imp_power, dur_power=args.dur_power,
+                     tolerance=args.tolerance, over_tolerance=args.over_tolerance, use_hook=not args.no_hook)
+    print(f"Gemini: {record.get('model')} / {record.get('processing')}, answered in {record.get('seconds')}s, "
+          f"read from its {record.get('parsed_by')}")
+    if record.get("issues"):
+        print(f"Fixed while reading the answer: {'; '.join(record['issues'][:10])}")
+    print()
+    print(format_story(units, record["story_map"]))
+    print("\nCUTS (picked by code from the story map)")
+    print(format_cuts(cuts))
+    if args.json_out:
+        args.json_out.parent.mkdir(parents=True, exist_ok=True)
+        args.json_out.write_text(json.dumps(
+            {"video": str(video), "fingerprint": fp, "units": [u.to_dict() for u in units],
+             "story_map": record["story_map"], "raw_answer": record.get("raw_answer"), "cuts": cuts},
+            indent=1, ensure_ascii=False))
+        print(f"\nWritten to {args.json_out}")
 
 
 if __name__ == "__main__":

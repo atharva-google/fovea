@@ -102,6 +102,23 @@ from fovea import run
 run("in.mp4", targets=["9:16", "1:1"], transcribe=True)
 ```
 
+## Cutdowns: story map (work in progress)
+Shorter versions of a video are cut from a **story map**: the video is chopped into small exact pieces
+("units"), Gemini watches it once and scores / links the units, and code picks units for a target length.
+For now this only **prints** the units, Gemini's map and the proposed cuts; it does not render them yet.
+```bash
+pip install -r requirements.txt && python -m fovea download --all   # needs Whisper + Demucs + google-genai
+export GEMINI_API_KEY=...                         # only needed the first time a video file is seen
+python -m fovea story my_ad.mp4 -d 15 10          # proposed 15 s and 10 s cuts, synced and cutaway
+python -m fovea story my_ad.mp4 -d 15 --cut-penalty 1 --arc-importance 7   # re-pick with other settings
+```
+- Units and story map are stored in `working/_story/<sha256 of the file>/` (`units.json`, `story_map.json`).
+  The same file always reuses them: no analysis, no Gemini call, no key. `--refresh` asks Gemini again.
+- `synced` keeps each piece's own sound; `cutaway` may show another picture while a line plays.
+- The story comes first: units Gemini scores at or above `--arc-importance` (and what they need) are always
+  kept, even if that runs past the target. `--json out.json` saves everything, including Gemini's raw answer.
+- Tests of the picking logic (no video or Gemini needed): `python -m unittest discover -s tests -v`
+
 ## Speed options
 | Option | Default | Effect |
 |---|---|---|

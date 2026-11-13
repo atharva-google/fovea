@@ -16,3 +16,6 @@ huggingface_hub
 # Optional: only needed for --transcribe
 faster-whisper>=1.1.0  # BatchedInferencePipeline
 demucs
+
+# Optional: only needed for `fovea story` / cutdowns (the first time a video file is seen); also needs the two above
+google-genai

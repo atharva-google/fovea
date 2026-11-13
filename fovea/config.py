@@ -109,6 +109,12 @@ class PipelineConfig:
     cut_threshold_px: float = 450.0  # in source pixels
     still_deadband_px: float = 45.0  # in source pixels
 
+    # ------------------------------------------- story map (cutdowns; see fovea/story/)
+    story_dir: Optional[Path] = None  # stored units + story maps, one folder per video file (None = <work_dir>/_story)
+    gemini_model: str = "gemini-flash-latest"
+    gemini_video_processing: str = "AGENTIC"  # "AGENTIC" (Gemini may rewatch parts) | "STATIC"
+    refresh_story: bool = False  # ask Gemini again even if a story map is stored for this video file
+
     # ------------------------------------------------------------------ limits
     max_duration_s: Optional[float] = None  # reject longer videos (demo mode)
 
@@ -119,6 +125,8 @@ class PipelineConfig:
     def __post_init__(self) -> None:
         for name in _PATH_FIELDS:
             setattr(self, name, Path(getattr(self, name)))
+        if self.story_dir is not None:
+            self.story_dir = Path(self.story_dir)
         if isinstance(self.targets, str):
             self.targets = [self.targets]
         if self.focal_strategy not in ("viterbi", "rules"):
@@ -145,4 +153,6 @@ class PipelineConfig:
         d = asdict(self)
         for name in _PATH_FIELDS:
             d[name] = str(d[name])
+        if d.get("story_dir") is not None:
+            d["story_dir"] = str(d["story_dir"])
         return d
