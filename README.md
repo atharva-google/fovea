@@ -19,7 +19,7 @@ git clone https://github.com/YOUR_USERNAME/fovea.git && cd fovea
 pip install -r requirements.txt            # needs Python 3.9+ and ffmpeg (brew/apt install ffmpeg)
 python -m fovea download                   # model weights, one time
 python -m fovea run my_video.mp4 -t 9:16 1:1
-# → ../fovea_data/outputs/my_video_9x16.mp4, ../fovea_data/outputs/my_video_1x1.mp4
+# → ../fovea_data/my_video/outputs/9x16.mp4 and 1x1.mp4
 ```
 To run it **as a web service** on your machine (backend API + a frontend later):
 ```bash
@@ -61,17 +61,21 @@ weights/                   model files (downloaded, not in git)
 ```
 
 ### Where files go
-Working files never go into the code folder. On your machine and on Colab, everything a run creates goes into
-**one data folder next to the code**: `../fovea_data/` (e.g. `/content/fovea_data` on Colab). Set `FOVEA_HOME`
-to put it somewhere else. Model weights are part of the code setup and stay in `weights/`.
+Two folders, side by side:
 ```
-fovea_data/
-├── working/     one job folder per video (its input + all analysis), and _story/ (stored story maps)
-├── outputs/     final videos
-└── backend/     the local backend's uploads, job folders and job records
+fovea/                 the code (from GitHub) + weights/ (the model files)
+fovea_data/            everything a run creates; the code folder is never written to
+└── <video name>/      ONE folder per video, named after the file, with everything about it
+    ├── input/           the video
+    ├── prep/            proxy, audio, shots, and for cutdowns: units.json + story_map.json
+    ├── visual/          tracking, speakers, OCR, motion
+    ├── audio/           vocals, transcript
+    ├── framing/         focal points, camera paths
+    └── outputs/         the final videos (9x16.mp4, 1x1.mp4, ...)
 ```
-Each part can be moved on its own: `FOVEA_WORK_DIR`, `FOVEA_OUTPUT_DIR`, and `DATA_DIR`
-for the backend. On Google Cloud, job files live in the Cloud Storage bucket instead.
+`fovea_data/` sits next to the code (`/content/fovea_data` on Colab); `FOVEA_HOME` moves it. `-o some/folder`
+additionally copies the final videos there as `<video name>_<format>.mp4`. The local backend keeps its uploads
+and job records in `fovea_data/backend/`. On Google Cloud, the Cloud Storage bucket takes the place of `fovea_data/`.
 
 ### How the pieces fit
 ```
@@ -125,8 +129,9 @@ export GEMINI_API_KEY=...                         # only needed the first time a
 python -m fovea story my_ad.mp4 -d 15 10          # proposed 15 s and 10 s cuts, synced and cutaway
 python -m fovea story my_ad.mp4 -d 15 --cut-penalty 1 --arc-importance 7   # re-pick with other settings
 ```
-- Units and story map are stored in `fovea_data/working/_story/<sha256 of the file>/` (`units.json`, `story_map.json`).
-  The same file always reuses them: no analysis, no Gemini call, no key. `--refresh` asks Gemini again.
+- Units and story map are stored in the video's own folder: `fovea_data/<video name>/prep/units.json` and
+  `story_map.json`. The same file always reuses them: no analysis, no Gemini call, no key. `--refresh` asks Gemini
+  again. A different video with the same file name does not inherit them (they are tied to the file's SHA-256).
 - `synced` keeps each piece's own sound; `cutaway` may show another picture while a line plays.
 - The story comes first: units Gemini scores at or above `--arc-importance` (and what they need) are always
   kept, even if that runs past the target. `--json out.json` saves everything, including Gemini's raw answer.
@@ -144,7 +149,7 @@ python -m fovea story my_ad.mp4 -d 15 --cut-penalty 1 --arc-importance 7   # re-
 | `--motion-workers` | auto | motion saliency threads (CPU) |
 | `--no-gpu-video` | off | disable NVDEC/NVENC |
 
-Each video gets a job folder in `fovea_data/working/<video>/`. Steps whose outputs already exist are skipped, so re-rendering a new format only re-runs `render`. Use `--force` to start over.
+Each video gets its own folder, `fovea_data/<video name>/`. Steps whose outputs already exist are skipped, so re-rendering a new format only re-runs `render`. Use `--force` to start over.
 
 ## Model weights
 Weights are not stored in git. They're fetched into `weights/` with `python -m fovea download`, from your Hugging Face repo if `FOVEA_HF_REPO` is set (publish one with `scripts/upload_weights_to_hf.py`), otherwise from the official sources. See [`weights/README.md`](weights/README.md).

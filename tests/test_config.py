@@ -24,9 +24,9 @@ class DataFolderTest(unittest.TestCase):
         with env():
             self.assertEqual(fovea_home(), CODE.parent / "fovea_data")
             cfg = PipelineConfig()
-            for folder in (cfg.work_dir, cfg.output_dir):
-                self.assertEqual(folder.parent, CODE.parent / "fovea_data")
-                self.assertNotIn(CODE, folder.parents)
+            self.assertEqual(cfg.work_dir, CODE.parent / "fovea_data")   # <data folder>/<video name>/ per video
+            self.assertNotIn(CODE, [cfg.work_dir, *cfg.work_dir.parents])
+            self.assertIsNone(cfg.output_dir)                             # final videos stay in the video's folder
 
     def test_weights_stay_with_the_code(self):
         with env():
@@ -37,14 +37,21 @@ class DataFolderTest(unittest.TestCase):
     def test_fovea_home_moves_the_working_files(self):
         with env(FOVEA_HOME="/somewhere/else"):
             cfg = PipelineConfig()
-            self.assertEqual((cfg.work_dir, cfg.output_dir),
-                             (Path("/somewhere/else/working"), Path("/somewhere/else/outputs")))
+            self.assertEqual(cfg.work_dir, Path("/somewhere/else"))
+            self.assertIsNone(cfg.output_dir)
+
+    def test_an_output_folder_is_only_used_when_asked_for(self):
+        with env(FOVEA_OUTPUT_DIR="/my/exports"):
+            self.assertEqual(PipelineConfig().output_dir, Path("/my/exports"))
+        with env():
+            self.assertEqual(PipelineConfig(output_dir="/my/exports").output_dir, Path("/my/exports"))
+            self.assertEqual(PipelineConfig().to_dict()["output_dir"], None)
 
     def test_one_folder_can_be_moved_on_its_own(self):
         with env(FOVEA_WEIGHTS_DIR="/drive/weights"):
             cfg = PipelineConfig()
             self.assertEqual(cfg.weights_dir, Path("/drive/weights"))
-            self.assertEqual(cfg.work_dir, CODE.parent / "fovea_data" / "working")
+            self.assertEqual(cfg.work_dir, CODE.parent / "fovea_data")
 
     def test_building_a_config_creates_no_folders(self):
         with env():

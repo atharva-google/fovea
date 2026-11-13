@@ -10,7 +10,8 @@ from pathlib import Path
 
 from fovea.story.report import format_cuts, format_story, make_cuts
 from fovea.story.select import Piece, merge_pieces, select_units
-from fovea.story.store import StoryStore, fingerprint
+from fovea.story import store
+from fovea.story.store import fingerprint
 from fovea.story.story_map import PROMPT_VERSION, clean_story_map, extract_json, story_prompt
 from fovea.story.units import Unit, build_units
 
@@ -206,35 +207,39 @@ class StoreTest(unittest.TestCase):
             self.assertEqual(fingerprint(a), fingerprint(b))
             self.assertNotEqual(fingerprint(a), fingerprint(c))
 
-    def test_save_then_load_returns_the_same_data(self):
+    def test_save_then_load_returns_the_same_data_in_the_videos_own_folder(self):
         units, smap, *_ = example()
         with tempfile.TemporaryDirectory() as d:
-            store = StoryStore(d)
-            self.assertIsNone(store.load("abc"))
-            store.save("abc", units, {"story_map": smap, "raw_answer": "raw", "model": "m"}, "ad.mp4")
-            got_units, record = store.load("abc")
+            prep = Path(d, "my_ad", "prep")
+            self.assertIsNone(store.load(prep, "abc"))
+            store.save(prep, "abc", units, {"story_map": smap, "raw_answer": "raw", "model": "m"}, "my_ad.mp4")
+            self.assertEqual(sorted(p.name for p in prep.iterdir()), ["story_map.json", "units.json"])
+            got_units, record = store.load(prep, "abc")
             self.assertEqual(got_units, units)
             self.assertEqual(record["story_map"], smap)
             self.assertEqual(record["raw_answer"], "raw")
-            self.assertIsNone(store.load("other"))
+
+    def test_a_different_file_with_the_same_name_does_not_inherit_the_story_map(self):
+        units, smap, *_ = example()
+        with tempfile.TemporaryDirectory() as d:
+            store.save(d, "abc", units, {"story_map": smap})
+            self.assertIsNone(store.load(d, "other-fingerprint"))
 
     def test_entry_from_an_older_prompt_is_not_reused(self):
         units, smap, *_ = example()
         with tempfile.TemporaryDirectory() as d:
-            store = StoryStore(d)
-            folder = store.save("abc", units, {"story_map": smap})
+            folder = store.save(d, "abc", units, {"story_map": smap})
             record = json.loads((folder / "story_map.json").read_text())
             record["prompt_version"] = PROMPT_VERSION - 1
             (folder / "story_map.json").write_text(json.dumps(record))
-            self.assertIsNone(store.load("abc"))
+            self.assertIsNone(store.load(d, "abc"))
 
     def test_broken_entry_counts_as_missing(self):
         units, smap, *_ = example()
         with tempfile.TemporaryDirectory() as d:
-            store = StoryStore(d)
-            folder = store.save("abc", units, {"story_map": smap})
+            folder = store.save(d, "abc", units, {"story_map": smap})
             (folder / "units.json").write_text("{not json")
-            self.assertIsNone(store.load("abc"))
+            self.assertIsNone(store.load(d, "abc"))
 
 
 class ReportTest(unittest.TestCase):

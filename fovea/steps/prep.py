@@ -7,7 +7,7 @@
   * split the shots into groups ("shards") so the visual step can run on several GPUs
 
 Reads:  input/<video>
-Writes: prep/video_info.json, prep/proxy.mp4, prep/audio.wav, prep/shots.csv, prep/shards.json
+Writes: prep/video_info.json (incl. the input's fingerprint), prep/proxy.mp4, prep/audio.wav, prep/shots.csv, prep/shards.json
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from ..config import PipelineConfig
+from ..story.store import fingerprint
 from ..utils.jobdir import JobDir
 from ..utils.progress import Progress, noop
 from ..utils.video import extract_audio, has_audio_stream, make_proxy, make_silent_audio, probe_video
@@ -59,7 +60,8 @@ def run(job: JobDir, cfg: PipelineConfig, log=print, progress: Optional[Progress
     shards = plan_shards(shots, cfg.max_shards, cfg.min_frames_per_shard)
     log(f"  {len(shots)} shots -> {len(shards)} shard(s)")
 
-    job.write_json(job.video_info, {"source": src.to_dict(), "proxy": proxy.to_dict(), "has_audio": has_audio})
+    job.write_json(job.video_info, {"source": src.to_dict(), "proxy": proxy.to_dict(), "has_audio": has_audio,
+                                    "sha256": fingerprint(source)})  # which file this analysis belongs to
     job.write_json(job.shards, {"num_shards": len(shards), "shards": shards})  # written last = "prep done"
     return len(shards)
 

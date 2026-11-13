@@ -33,8 +33,10 @@ def _build_parser() -> argparse.ArgumentParser:
                         f"({', '.join(PRESETS)}). Default: 9:16")
     r.add_argument("--short-side", type=int, default=d.short_side,
                    help="Output short side in px when a ratio is given (default 1080)")
-    r.add_argument("-o", "--output-dir", type=Path, default=d.output_dir)
-    r.add_argument("--work-dir", type=Path, default=d.work_dir)
+    r.add_argument("-o", "--output-dir", type=Path, default=d.output_dir,
+                   help="Also copy the final videos here (default: they stay in <work-dir>/<video name>/outputs/)")
+    r.add_argument("--work-dir", type=Path, default=d.work_dir,
+                   help="Data folder: each video gets ONE folder in it, <video name>/, with everything about it")
     r.add_argument("--weights-dir", type=Path, default=d.weights_dir)
     r.add_argument("--device", choices=["cuda", "mps", "cpu"], default=None)
 
@@ -85,9 +87,9 @@ def _build_parser() -> argparse.ArgumentParser:
     st.add_argument("--refresh", action="store_true", help="Ask Gemini again even if a story map is stored")
     st.add_argument("--json", type=Path, default=None, dest="json_out",
                     help="Also write units, story map and cuts to this JSON file")
-    st.add_argument("--work-dir", type=Path, default=d.work_dir)
+    st.add_argument("--work-dir", type=Path, default=d.work_dir,
+                    help="Data folder: each video gets ONE folder in it, <video name>/, with everything about it")
     st.add_argument("--weights-dir", type=Path, default=d.weights_dir)
-    st.add_argument("--story-dir", type=Path, default=None, help="Where story maps are stored (default: <work-dir>/_story)")
     st.add_argument("--device", choices=["cuda", "mps", "cpu"], default=None)
     st.add_argument("--whisper-model", default=d.whisper_model)
     k = st.add_argument_group("selector (change and re-run: no Gemini call, no re-analysis)")
@@ -159,26 +161,27 @@ def main(argv=None) -> None:
 
 
 def _story(args) -> None:
-    """``fovea story``: stored story map if this file was seen before, else analysis + one Gemini call."""
+    """``fovea story``: the stored story map if this video has one, else analysis + one Gemini call."""
     import json
     import os
 
+    from .story import store
     from .story.report import format_cuts, format_story, make_cuts
-    from .story.store import StoryStore, default_root, fingerprint
 
     video = Path(args.video)
     if not video.is_file():
         raise SystemExit(f"Input video not found: {video}")
     cfg = PipelineConfig(
-        weights_dir=args.weights_dir, work_dir=args.work_dir, story_dir=args.story_dir, device=args.device,
+        weights_dir=args.weights_dir, work_dir=args.work_dir, device=args.device,
         transcribe=True, whisper_model=args.whisper_model, gemini_model=args.gemini_model,
         gemini_video_processing=args.gemini_video_processing, refresh_story=args.refresh,
     )
-    fp = fingerprint(video)
-    found = None if cfg.refresh_story else StoryStore(default_root(cfg)).load(fp)
+    fp = store.fingerprint(video)
+    job_root = cfg.work_dir / video.stem          # the video's own folder: everything about it lives here
+    found = None if cfg.refresh_story else store.load(job_root / "prep", fp)
     if found:
         units, record = found
-        print(f"Story map for {video.name} found in the store ({fp[:12]}): no analysis, no Gemini call\n")
+        print(f"Story map for {video.name} already stored in {job_root / 'prep'}: no analysis, no Gemini call\n")
     else:
         key = args.gemini_key or os.environ.get("GEMINI_API_KEY")
         if not key:
@@ -190,15 +193,13 @@ def _story(args) -> None:
         from .utils.jobdir import JobDir
 
         device = get_device(cfg.device)
-        job = JobDir(cfg.work_dir / video.stem)
+        job = JobDir(job_root)
         job.set_source(video)
-        # Job folders are named after the file name. If this folder was analysed for a DIFFERENT file with
-        # the same name, its results must not end up in this file's story map: redo the analysis.
-        marker = job.path("input.sha256")
-        if marker.exists() and marker.read_text().strip() != fp:
-            print("  this job folder holds the analysis of a different file with the same name: re-running it")
+        # The folder is named after the file name. If it holds the analysis of a DIFFERENT file with the
+        # same name, those results must not end up in this file's story map: redo the analysis.
+        if job.video_info.exists() and job.read_json(job.video_info).get("sha256") not in (None, fp):
+            print("  this folder holds the analysis of a different file with the same name: re-running it")
             cfg.force = True
-        marker.write_text(fp)
         if not job.job_json.exists():
             job.write_json(job.job_json, {"config": {"targets": cfg.targets}})
         print(f"Fovea story | device={device} | job folder: {job.root}")

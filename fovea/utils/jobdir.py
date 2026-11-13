@@ -1,18 +1,21 @@
 """The folder layout of one job, and which files each step reads and writes.
 
-The SAME relative layout is used on local disk and in the cloud bucket
-(``gs://<bucket>/users/<user_id>/<job_id>/...``), so the cloud worker only
-has to copy a step's inputs down, run it, and copy its outputs up.
+Everything about one video lives in ONE folder. On a local machine / Colab that is
+``<data folder>/<video name>/`` (see ``fovea.config.fovea_home``). The SAME relative layout is
+used in the cloud bucket (``gs://<bucket>/users/<user_id>/<job_id>/...``), so the cloud worker
+only has to copy a step's inputs down, run it, and copy its outputs up.
 
 ::
 
     job.json                    request: targets + config overrides
     input/<video file>          the original upload
-    prep/video_info.json        {"source": {...}, "proxy": {...}, "has_audio": bool}
+    prep/video_info.json        {"source": {...}, "proxy": {...}, "has_audio": bool, "sha256": fingerprint of the input}
     prep/proxy.mp4              720p / 25fps silent copy used for all analysis
     prep/audio.wav              16 kHz audio
     prep/shots.csv              shot list
     prep/shards.json            how shots are split across visual workers
+    prep/units.json             cutdowns: the video cut into small exact pieces (fovea/story/units.py)
+    prep/story_map.json         cutdowns: Gemini's story map of those units (fovea/story/story_map.py)
     visual/shard_000.pkl        per-shard analysis (tracks, motion, OCR, speaker scores)
     audio/                      vocals.wav, no_vocals.wav, transcript.json, transcript.csv
     framing/                    focal_points.csv, trajectory_<label>.csv
@@ -75,6 +78,10 @@ class JobDir:
     def shots(self) -> Path: return self.path("prep/shots.csv")
     @property
     def shards(self) -> Path: return self.path("prep/shards.json")
+    @property
+    def units_json(self) -> Path: return self.path("prep/units.json")
+    @property
+    def story_map_json(self) -> Path: return self.path("prep/story_map.json")
     @property
     def audio_dir(self) -> Path: return self.folder("audio")
     @property

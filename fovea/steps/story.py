@@ -1,24 +1,23 @@
-"""STEP story (only for cutdowns): units + story map for this video, from the store or from Gemini.
+"""STEP story (only for cutdowns): units + story map for this video, stored ones or new from Gemini.
 
-  * fingerprint the video file and look in the store: if units + story map are there, use them
-    (no analysis outputs, no Gemini call and no key needed)
+  * if the video's folder already holds units + story map made from this exact file, use them
+    (no Gemini call and no key needed)
   * otherwise build the units from the analysis (shots, transcript, speakers, people, on-screen
-    text), ask Gemini ONCE for the story map, and store both under the fingerprint
+    text), ask Gemini ONCE for the story map, and save both
 
-Reads:  input/<video>, and on a store miss: prep/*, visual/*, audio/transcript.json
-Writes: <story dir>/<fingerprint>/units.json, story_map.json
+Reads:  input/<video>, and when nothing is stored: prep/*, visual/*, audio/transcript.json
+Writes: prep/units.json, prep/story_map.json
 """
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 
 from ..config import PipelineConfig
-from ..story.store import StoryStore, default_root, fingerprint
+from ..story import store
 from ..story.story_map import request_story_map
 from ..story.units import FactsAt, Unit, build_units
 from ..utils.jobdir import JobDir
@@ -28,24 +27,20 @@ class StoryKeyRequired(RuntimeError):
     """No story map is stored for this video yet, and no Gemini key was given to make one."""
 
 
-def story_store(cfg: PipelineConfig) -> StoryStore:
-    return StoryStore(default_root(cfg))
-
-
-def lookup(video_path: str | Path, cfg: PipelineConfig) -> Tuple[str, Optional[List[Unit]], Optional[Dict[str, Any]]]:
-    """``(fingerprint, units, record)``; units and record are None when nothing usable is stored
-    (or ``cfg.refresh_story`` is set)."""
-    fp = fingerprint(video_path)
-    found = None if cfg.refresh_story else story_store(cfg).load(fp)
+def lookup(job: JobDir, cfg: PipelineConfig) -> Tuple[str, Optional[List[Unit]], Optional[Dict[str, Any]]]:
+    """``(fingerprint, units, record)``; units and record are None when the job folder holds nothing
+    usable for this exact file (or ``cfg.refresh_story`` is set)."""
+    fp = store.fingerprint(job.source)
+    found = None if cfg.refresh_story else store.load(job.units_json.parent, fp)
     return (fp, found[0], found[1]) if found else (fp, None, None)
 
 
 def run(job: JobDir, cfg: PipelineConfig, api_key: Optional[str] = None,
         log: Callable[[str], None] = print) -> Dict[str, Any]:
     """Returns ``{"fingerprint", "units", "record", "cached"}``; ``record["story_map"]`` is the map."""
-    fp, units, record = lookup(job.source, cfg)
+    fp, units, record = lookup(job, cfg)
     if units is not None:
-        log(f"  story map found in the store ({fp[:12]}), no Gemini call")
+        log(f"  story map already stored for this video ({job.story_map_json}), no Gemini call")
         return {"fingerprint": fp, "units": units, "record": record, "cached": True}
     if not api_key:
         raise StoryKeyRequired("Gemini key required for the first cutdown of this video "
@@ -60,8 +55,8 @@ def run(job: JobDir, cfg: PipelineConfig, api_key: Optional[str] = None,
 
     result = request_story_map(job.source, units, api_key, cfg.gemini_model, cfg.gemini_video_processing, log,
                                api_version=cfg.gemini_api_version)
-    folder = story_store(cfg).save(fp, units, result, job.source.name)
-    log(f"  story map stored in {folder}")
+    store.save(job.units_json.parent, fp, units, result, job.source.name)
+    log(f"  stored: {job.units_json} and {job.story_map_json}")
     record = {"fingerprint": fp, "source": job.source.name, **result}
     return {"fingerprint": fp, "units": units, "record": record, "cached": False}
 

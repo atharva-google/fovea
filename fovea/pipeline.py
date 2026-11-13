@@ -65,12 +65,16 @@ def run(video_path: str | Path, config: Optional[PipelineConfig] = None, **overr
     with _step("4/4 render"):
         rendered = steps.render.run(job, cfg)
 
-    outputs = []
-    cfg.output_dir.mkdir(parents=True, exist_ok=True)
-    for label, path in rendered.items():
-        dest = cfg.output_dir / f"{video_path.stem}_{label}.mp4"
-        shutil.copy2(path, dest)
-        outputs.append(dest)
+    # The final videos stay in the video's own folder (<video name>/outputs/<format>.mp4).
+    # Only when an output folder was asked for are they also copied there.
+    outputs = [Path(path) for path in rendered.values()]
+    if cfg.output_dir is not None:
+        cfg.output_dir.mkdir(parents=True, exist_ok=True)
+        outputs = []
+        for label, path in rendered.items():
+            dest = cfg.output_dir / f"{video_path.stem}_{label}.mp4"
+            shutil.copy2(path, dest)
+            outputs.append(dest)
 
     if audio_future is not None:
         print("… waiting for the audio step", flush=True)

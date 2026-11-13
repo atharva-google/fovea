@@ -20,16 +20,18 @@ def _code_root() -> Optional[Path]:
 
 
 def fovea_home() -> Path:
-    """The ONE folder Fovea's working files go to on a local machine or Colab. Never the code folder.
+    """The data folder: where every working file goes on a local machine or Colab. Never the code folder.
 
         $FOVEA_HOME                 if set
         <code folder>/../fovea_data when running from a checkout (e.g. /content/fovea -> /content/fovea_data)
         ~/fovea_data                when installed as a package
 
-    Inside it: ``working/`` (one job folder per video, with its input, and the story-map store),
-    ``outputs/`` (final videos), ``backend/`` (the local backend's files). Each can still be moved
-    on its own with FOVEA_WORK_DIR / FOVEA_OUTPUT_DIR (and DATA_DIR for the backend).
-    On Google Cloud, job files live in the bucket instead.
+    One folder per video, named after the video file, holds EVERYTHING about that video::
+
+        fovea_data/<video name>/input/ prep/ visual/ audio/ framing/ outputs/
+
+    (layout: fovea/utils/jobdir.py). The local backend keeps its files in ``fovea_data/backend/``.
+    On Google Cloud the bucket plays the role of this folder.
 
     Model weights are NOT working files: they stay with the code, in ``<code folder>/weights/``.
     """
@@ -50,22 +52,26 @@ def default_weights_dir() -> Path:
 
 
 def default_work_dir() -> Path:
-    return Path(os.environ.get("FOVEA_WORK_DIR") or fovea_home() / "working")
+    """Parent of the per-video folders: the data folder itself (FOVEA_WORK_DIR moves it)."""
+    return Path(os.environ.get("FOVEA_WORK_DIR") or fovea_home())
 
 
-def default_output_dir() -> Path:
-    return Path(os.environ.get("FOVEA_OUTPUT_DIR") or fovea_home() / "outputs")
+def default_output_dir() -> Optional[Path]:
+    """None = final videos stay in the video's own folder (``<video name>/outputs/``).
+    Set FOVEA_OUTPUT_DIR (or ``output_dir``) to ALSO get copies named ``<video name>_<format>.mp4`` there."""
+    env = os.environ.get("FOVEA_OUTPUT_DIR")
+    return Path(env) if env else None
 
 
-_PATH_FIELDS = ("weights_dir", "work_dir", "output_dir")
+_PATH_FIELDS = ("weights_dir", "work_dir")
 
 
 @dataclass
 class PipelineConfig:
     # ------------------------------------------------------------------ paths
     weights_dir: Path = field(default_factory=default_weights_dir)
-    work_dir: Path = field(default_factory=default_work_dir)      # per-video job folders
-    output_dir: Path = field(default_factory=default_output_dir)  # final videos (local runs)
+    work_dir: Path = field(default_factory=default_work_dir)      # holds one folder per video (everything about it)
+    output_dir: Optional[Path] = field(default_factory=default_output_dir)  # extra copies of the final videos (None = no copies)
 
     # ---------------------------------------------------------------- outputs
     # Ratios ("9:16", "1:1"), presets ("vertical", "square") or sizes ("1080x1920").
@@ -131,11 +137,10 @@ class PipelineConfig:
     still_deadband_px: float = 45.0  # in source pixels
 
     # ------------------------------------------- story map (cutdowns; see fovea/story/)
-    story_dir: Optional[Path] = None  # stored units + story maps, one folder per video file (None = <work_dir>/_story)
     gemini_model: str = "gemini-3.8-flash"
     gemini_api_version: str = "v1beta"  # what the experiment ran on; newer google-genai releases default to "v1"
     gemini_video_processing: str = "AGENTIC"  # "AGENTIC" (Gemini may rewatch parts) | "STATIC"
-    refresh_story: bool = False  # ask Gemini again even if a story map is stored for this video file
+    refresh_story: bool = False  # ask Gemini again even if this video's folder already holds its story map
 
     # ------------------------------------------------------------------ limits
     max_duration_s: Optional[float] = None  # reject longer videos (demo mode)
@@ -147,8 +152,8 @@ class PipelineConfig:
     def __post_init__(self) -> None:
         for name in _PATH_FIELDS:
             setattr(self, name, Path(getattr(self, name)))
-        if self.story_dir is not None:
-            self.story_dir = Path(self.story_dir)
+        if self.output_dir is not None:
+            self.output_dir = Path(self.output_dir)
         if isinstance(self.targets, str):
             self.targets = [self.targets]
         if self.focal_strategy not in ("viterbi", "rules"):
@@ -175,6 +180,6 @@ class PipelineConfig:
         d = asdict(self)
         for name in _PATH_FIELDS:
             d[name] = str(d[name])
-        if d.get("story_dir") is not None:
-            d["story_dir"] = str(d["story_dir"])
+        if d.get("output_dir") is not None:
+            d["output_dir"] = str(d["output_dir"])
         return d
