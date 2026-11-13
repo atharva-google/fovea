@@ -1,7 +1,7 @@
 """Model weight registry + downloader.
 
 Weights are NOT stored in git. On first use each model is fetched into
-``weights/`` (or ``$FOVEA_WEIGHTS_DIR``).
+``<fovea data folder>/weights/`` (or ``$FOVEA_WEIGHTS_DIR``); see ``fovea.config.fovea_home``.
 
 Two sources are supported, tried in this order:
 

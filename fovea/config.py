@@ -13,27 +13,37 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-def _project_root() -> Path:
-    """Return the repo root if running from a git checkout, else the CWD."""
-    repo_root = Path(__file__).resolve().parent.parent
-    if (repo_root / "pyproject.toml").exists():
-        return repo_root
-    return Path.cwd()
+def fovea_home() -> Path:
+    """The ONE folder Fovea writes to on a local machine or Colab. Never the code folder.
 
+        $FOVEA_HOME                 if set
+        <code folder>/../fovea_data when running from a checkout (e.g. /content/fovea -> /content/fovea_data)
+        ~/fovea_data                when installed as a package
 
-PROJECT_ROOT = _project_root()
+    Inside it: ``weights/`` (models), ``working/`` (one job folder per video, with its input, and
+    the story-map store), ``outputs/`` (final videos), ``backend/`` (the local backend's files).
+    Each can still be moved on its own with FOVEA_WEIGHTS_DIR / FOVEA_WORK_DIR / FOVEA_OUTPUT_DIR
+    (and DATA_DIR for the backend). On Google Cloud, job files live in the bucket instead.
+    """
+    env = os.environ.get("FOVEA_HOME")
+    if env:
+        return Path(env).expanduser()
+    code_root = Path(__file__).resolve().parent.parent
+    if (code_root / "pyproject.toml").exists():
+        return code_root.parent / "fovea_data"
+    return Path.home() / "fovea_data"
 
 
 def default_weights_dir() -> Path:
-    return Path(os.environ.get("FOVEA_WEIGHTS_DIR", PROJECT_ROOT / "weights"))
+    return Path(os.environ.get("FOVEA_WEIGHTS_DIR") or fovea_home() / "weights")
 
 
 def default_work_dir() -> Path:
-    return Path(os.environ.get("FOVEA_WORK_DIR", PROJECT_ROOT / "working"))
+    return Path(os.environ.get("FOVEA_WORK_DIR") or fovea_home() / "working")
 
 
 def default_output_dir() -> Path:
-    return Path(os.environ.get("FOVEA_OUTPUT_DIR", PROJECT_ROOT / "outputs"))
+    return Path(os.environ.get("FOVEA_OUTPUT_DIR") or fovea_home() / "outputs")
 
 
 _PATH_FIELDS = ("weights_dir", "work_dir", "output_dir")

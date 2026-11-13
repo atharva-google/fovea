@@ -2,7 +2,8 @@
 
 The one setting that matters most is ``MODE``:
 
-    MODE=local  (default)  files in ./data, job records in ./data/_jobs, jobs run in
+    MODE=local  (default)  files and job records in DATA_DIR (default: <fovea data folder>/backend,
+                           outside the code folder; see fovea.config.fovea_home), jobs run in
                            a background thread on THIS machine's GPU/CPU. No cloud needed.
     MODE=gcp               files in a Cloud Storage bucket, job records in Firestore,
                            jobs run as Cloud Run GPU jobs started by Cloud Workflows.
@@ -19,7 +20,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+from fovea.config import fovea_home
 
 
 def _env(name: str, default: str = "") -> str:
@@ -106,7 +107,7 @@ def get_settings() -> Settings:
         max_shards=_int("MAX_SHARDS", 1),
         split_steps=_bool("SPLIT_STEPS", True),
         signed_url_minutes=_int("SIGNED_URL_MINUTES", 60),
-        data_dir=Path(_env("DATA_DIR", str(REPO_ROOT / "data"))),
+        data_dir=Path(_env("DATA_DIR") or fovea_home() / "backend"),
         public_url=_env("PUBLIC_URL", f"http://localhost:{port}").rstrip("/"),
         project=_env("GOOGLE_CLOUD_PROJECT"),
         region=_env("REGION", "us-central1"),

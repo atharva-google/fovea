@@ -4,8 +4,8 @@ The Fovea backend: an HTTP API, a job queue, and a worker that runs the four `fo
 
 | | `MODE=local` (default) | `MODE=gcp` |
 |---|---|---|
-| Video files | `./data/users/<user_id>/<job_id>/` | `gs://<bucket>/users/<user_id>/<job_id>/` |
-| Job records | `./data/_jobs/<job_id>.json` | Firestore |
+| Video files | `../fovea_data/backend/users/<user_id>/<job_id>/` (outside the code folder; `DATA_DIR` moves it) | `gs://<bucket>/users/<user_id>/<job_id>/` |
+| Job records | `../fovea_data/backend/_jobs/<job_id>.json` | Firestore |
 | Who runs a job | a background thread in the API process, on this machine's GPU (or CPU) | Cloud Workflows starts Cloud Run GPU job tasks |
 | Upload/download links | the API's own `/v1/files/...` (signed) | signed Cloud Storage URLs |
 | Start it | `python -m backend serve` | `./backend/gcp/deploy.sh` |
