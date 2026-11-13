@@ -141,12 +141,14 @@ def _safe(message: str, api_key: str) -> str:
 
 def request_story_map(video_path: str | Path, units: List[Unit], api_key: str,
                       model: str = "gemini-flash-latest", processing: str = "AGENTIC",
-                      log: Callable[[str], None] = print) -> Dict[str, Any]:
+                      log: Callable[[str], None] = print, api_version: str = "v1beta") -> Dict[str, Any]:
     """Upload the video, ask for the story map, return it cleaned.
 
     Returns ``{"story_map", "issues", "raw_answer", "model", "processing", "seconds", "parsed_by"}``.
     ``processing`` is the video processing mode ("AGENTIC" lets Gemini rewatch parts; "" or "STATIC"
     = the standard one). It is ignored, with a log line, if the installed google-genai has no such option.
+    ``api_version``: newer google-genai releases call the stable "v1" API by default, where ``-latest``
+    model names do not exist (404); "v1beta" is what the experiment ran on. "" = the SDK's default.
     """
     if not api_key:
         raise GeminiError("A Gemini API key is required to build the story map")
@@ -156,7 +158,10 @@ def request_story_map(video_path: str | Path, units: List[Unit], api_key: str,
     except ImportError as e:
         raise GeminiError("google-genai is not installed: pip install -U google-genai") from e
 
-    client = genai.Client(api_key=api_key)
+    if api_version:
+        client = genai.Client(api_key=api_key, http_options=types.HttpOptions(api_version=api_version))
+    else:
+        client = genai.Client(api_key=api_key)
     uploaded = None
     try:
         log(f"  uploading {Path(video_path).name} to Gemini")
@@ -201,13 +206,32 @@ def request_story_map(video_path: str | Path, units: List[Unit], api_key: str,
     except GeminiError:
         raise
     except Exception as e:  # noqa: BLE001 - SDK errors can echo request details; never leak the key
-        raise GeminiError(_safe(f"Gemini call failed: {type(e).__name__}: {e}", api_key)) from None
+        message = f"Gemini call failed: {type(e).__name__}: {e}"
+        if "NOT_FOUND" in str(e) or "404" in str(e):
+            message += _available_models(client, model, api_version)
+        raise GeminiError(_safe(message, api_key)) from None
     finally:
         if uploaded is not None:
             try:
                 client.files.delete(name=uploaded.name)
             except Exception:  # noqa: BLE001 - uploaded files expire on their own
                 pass
+
+
+def _available_models(client, model: str, api_version: str) -> str:
+    """For a "model not found" error: which models this key can actually use (best effort)."""
+    try:
+        names = []
+        for m in client.models.list():
+            actions = getattr(m, "supported_actions", None) or []
+            if not actions or "generateContent" in actions:
+                names.append(str(m.name).split("/")[-1])
+        if not names:
+            return ""
+        return (f"\nModel '{model}' is not available to this key on API version '{api_version or 'default'}'. "
+                f"Pick one with --gemini-model. Available: {', '.join(sorted(names)[:60])}")
+    except Exception:  # noqa: BLE001 - the original error is what matters
+        return ""
 
 
 def _reformat(client, types, text: str) -> Dict[str, Any]:

@@ -80,6 +80,8 @@ def _build_parser() -> argparse.ArgumentParser:
     st.add_argument("--gemini-key", default=None,
                     help="Gemini API key (or set GEMINI_API_KEY). Only needed the first time a video file is seen")
     st.add_argument("--gemini-model", default=d.gemini_model)
+    st.add_argument("--gemini-api-version", default=d.gemini_api_version,
+                    help="Gemini API version (default v1beta; '-latest' model names are not on v1)")
     st.add_argument("--video-processing", choices=["AGENTIC", "STATIC"], default=d.gemini_video_processing,
                     dest="gemini_video_processing")
     st.add_argument("--refresh", action="store_true", help="Ask Gemini again even if a story map is stored")
@@ -172,6 +174,7 @@ def _story(args) -> None:
     cfg = PipelineConfig(
         weights_dir=args.weights_dir, work_dir=args.work_dir, story_dir=args.story_dir, device=args.device,
         transcribe=True, whisper_model=args.whisper_model, gemini_model=args.gemini_model,
+        gemini_api_version=args.gemini_api_version,
         gemini_video_processing=args.gemini_video_processing, refresh_story=args.refresh,
     )
     fp = fingerprint(video)

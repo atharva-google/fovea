@@ -58,7 +58,8 @@ def run(job: JobDir, cfg: PipelineConfig, api_key: Optional[str] = None,
     log(f"  {len(units)} units ({sum(u.kind == 'speech' for u in units)} speech, "
         f"{sum(u.kind == 'picture' for u in units)} picture) from {len(shots)} shots and {len(words)} words")
 
-    result = request_story_map(job.source, units, api_key, cfg.gemini_model, cfg.gemini_video_processing, log)
+    result = request_story_map(job.source, units, api_key, cfg.gemini_model, cfg.gemini_video_processing, log,
+                               api_version=cfg.gemini_api_version)
     folder = story_store(cfg).save(fp, units, result, job.source.name)
     log(f"  story map stored in {folder}")
     record = {"fingerprint": fp, "source": job.source.name, **result}

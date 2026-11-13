@@ -112,6 +112,7 @@ class PipelineConfig:
     # ------------------------------------------- story map (cutdowns; see fovea/story/)
     story_dir: Optional[Path] = None  # stored units + story maps, one folder per video file (None = <work_dir>/_story)
     gemini_model: str = "gemini-flash-latest"
+    gemini_api_version: str = "v1beta"  # "-latest" model names and agentic video are not on the stable "v1" API
     gemini_video_processing: str = "AGENTIC"  # "AGENTIC" (Gemini may rewatch parts) | "STATIC"
     refresh_story: bool = False  # ask Gemini again even if a story map is stored for this video file
 
