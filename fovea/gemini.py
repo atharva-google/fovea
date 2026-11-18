@@ -17,13 +17,15 @@ class GeminiError(RuntimeError):
 
 
 def ask_about_video(video_path: str | Path, prompt: str, api_key: str, model: str, api_version: str = "v1beta",
-                    schema: Optional[str] = None, agentic: bool = False,
+                    schema: Optional[str] = None, agentic: bool = False, thinking: str = "default",
                     log: Callable[[str], None] = print) -> Tuple[Dict[str, Any], float]:
     """Upload a video, ask one question, return ``(the answer as a dict, seconds it took)``.
 
     Standard: the answer is forced into ``schema`` (a class name in ``schema.py``).
     ``agentic``: agentic video processing (Gemini may rewatch parts). That mode takes no output
     schema, so the prompt must ask for one ```json block, which is parsed here.
+    ``thinking``: how hard the model thinks before it answers: "minimal", "low", "medium" or "high";
+    "default" leaves it to the model.
     The upload is deleted afterwards."""
     if not api_key:
         raise GeminiError("A Gemini API key is required: pass --gemini-key or set GEMINI_API_KEY")
@@ -52,15 +54,19 @@ def ask_about_video(video_path: str | Path, prompt: str, api_key: str, model: st
             raise GeminiError(f"Gemini could not process the video (state: {getattr(uploaded.state, 'name', '?')})")
 
         file_data = types.FileData(file_uri=uploaded.uri, mime_type=uploaded.mime_type)
+        options: Dict[str, Any] = {}
+        if thinking != "default":
+            options["thinking_config"] = types.ThinkingConfig(thinking_level=thinking)
         if agentic:
-            part, config = types.Part(file_data=file_data, media_processing="AGENTIC"), None
+            part = types.Part(file_data=file_data, media_processing="AGENTIC")
         else:
             from . import schema as schemas
 
             part = types.Part(file_data=file_data)
-            config = types.GenerateContentConfig(response_mime_type="application/json",
-                                                 response_schema=getattr(schemas, schema) if schema else None)
-        log(f"  asking {model} ({'agentic' if agentic else 'standard'} video processing; "
+            options.update(response_mime_type="application/json",
+                           response_schema=getattr(schemas, schema) if schema else None)
+        config = types.GenerateContentConfig(**options) if options else None
+        log(f"  asking {model} ({'agentic' if agentic else 'standard'} video processing, thinking: {thinking}; "
             f"gives up after {REQUEST_TIMEOUT_S}s)")
         t0 = time.time()
         resp = client.models.generate_content(model=model, contents=[part, prompt], config=config)

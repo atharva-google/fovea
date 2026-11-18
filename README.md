@@ -19,6 +19,8 @@ python -m fovea analyze my_ad.mp4
 
 It prints the cast, every shot (with what the cropped picture must show, and when that changes) and
 every piece of sound. Running it again reuses what is stored; `--refresh` asks Gemini again.
+`--thinking minimal|low|medium|high` sets how hard Gemini thinks before it answers (default: the model
+decides); use it with `--refresh` to compare levels on a video that is already analysed.
 
 ## What happens
 

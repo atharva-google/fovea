@@ -133,12 +133,13 @@ def run(job: Job, shots: Sequence[Dict[str, Any]], words: Sequence[Dict[str, Any
         f"({sum(a.kind == 'speech' for a in audio)} with speech)")
     raw, seconds = gemini.ask_about_video(
         job.proxy, build_prompt(audio, video, settings.agentic), api_key, settings.gemini_model,
-        settings.gemini_api_version, schema="Analysis", agentic=settings.agentic, log=log)
+        settings.gemini_api_version, schema="Analysis", agentic=settings.agentic,
+        thinking=settings.thinking, log=log)
     described, framing, issues = clean(raw, audio, video)
     for issue in issues[:15]:
         log(f"  fixed: {issue}")
     save(job, audio, video, described, framing, {
-        "model": settings.gemini_model, "mode": "agentic" if settings.agentic else "standard",
+        "model": settings.gemini_model, "mode": "agentic" if settings.agentic else "standard", "thinking": settings.thinking,
         "seconds": seconds, "issues": issues})
     log(f"  stored: {job.units_json.name}, {job.log_json.name} (prep/) and framing/{job.framing_json.name}")
     return {"audio": audio, "video": video, "log": described, "framing": framing, "cached": False}

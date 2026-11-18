@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 ROOT = Path(__file__).resolve().parent.parent     # the project folder
+THINKING_LEVELS = ("default", "minimal", "low", "medium", "high")
 
 
 @dataclass
@@ -31,6 +32,7 @@ class Settings:
     # ---- Gemini
     gemini_model: str = "gemini-3.8-flash"
     gemini_api_version: str = "v1beta"
+    thinking: str = "default"              # "default" (the model decides) | "minimal" | "low" | "medium" | "high"
     agentic: bool = False                  # agentic video processing: no output schema, the answer is parsed from a JSON block
 
     # ---- re-running
