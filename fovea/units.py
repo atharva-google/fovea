@@ -19,7 +19,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Sequence, Tuple
 
-UNITS_VERSION = 2   # bump when the cutting rules change in a way that makes stored units stale
+UNITS_VERSION = 3   # bump when the cutting rules change in a way that makes stored units stale
 
 _PUNCT = re.compile(r"[.?!,;:\u0964]$")   # \u0964 = the Devanagari full stop
 
@@ -106,7 +106,7 @@ def slots(audio: Sequence[AudioUnit], video: Sequence[VideoUnit], min_part: floa
 
 
 # =========================================================================== audio units
-def build_audio_units(words: Sequence[Dict[str, Any]], shots: Sequence[Span], min_gap: float = 0.15,
+def build_audio_units(words: Sequence[Dict[str, Any]], shots: Sequence[Span], min_gap: float = 0.25,
                       max_gap: float = 1.0, pad: float = 0.06) -> List[AudioUnit]:
     """Tile ``[0, end of the last shot]`` with speech and gap units.
 

@@ -4,6 +4,7 @@ folder. No video model, Gemini or third-party package is needed; ffmpeg is used 
     python -m unittest discover -s tests -v
 """
 
+import importlib.util
 import shutil
 import subprocess
 import tempfile
@@ -18,7 +19,7 @@ from fovea.units import build_audio_units, cut_units, slots
 SHOTS = [(0.0, 4.0), (4.0, 8.3), (8.3, 11.0)]
 WORDS = [{"word": w, "start_s": s, "end_s": e} for w, s, e in [
     ("I", 1.0, 1.3), ("hope", 1.35, 1.7), ("it's", 1.75, 2.0), ("shoes.", 2.05, 2.6),
-    ("Oh", 5.0, 5.28),                                         # then a 0.22 s unspoken "aaa"
+    ("Oh", 4.9, 5.18),                                         # then a 0.32 s unspoken "aaa"
     ("A", 5.5, 5.7), ("sweater.", 5.75, 6.5),
     ("Thank", 7.9, 8.2), ("you.", 8.25, 8.9),                  # runs across the cut at 8.3
 ]]
@@ -46,7 +47,7 @@ def answer(audio, video):
     text = {a.id: a.text for a in audio}
 
     def sounds(shot):
-        return [{"id": s["id"], "heard": "" if s["part"] else text[s["audio"]] or "(silence)",
+        return [{"id": s["id"], "time_range": f"{s['start']:.2f}-{s['end']:.2f}s", "heard": "" if s["part"] else text[s["audio"]] or "(silence)",
                  "kind": SLOTS[s["id"]][0], "speaker": SLOTS[s["id"]][1],
                  "needs": ["A02"] if s["id"] == "A08" else [], "focus_x": SLOTS[s["id"]][2]}
                 for s in slots(audio, video) if s["shot"] == shot]
@@ -56,11 +57,11 @@ def answer(audio, video):
         "cast": [{"id": "P1", "real_name": "", "ad_name": "Mira", "description": "woman, about 30, red kurta"},
                  {"id": "P2", "real_name": "", "ad_name": "", "description": "man, about 60, grey beard"}],
         "video_units": [
-            {"id": "V01", "shows": "a woman walks in with a gift", "cast": ["P1"], "setting": "living room",
+            {"id": "V01", "time_range": "0.00-4.00s", "shows": "a woman walks in with a gift", "cast": ["P1"], "setting": "living room",
              "objects": ["gift box"], "text": [], "needs": [], "audio": sounds("V01")},
-            {"id": "V02", "shows": "she opens it next to her father", "cast": ["P1", "P2"], "setting": "living room",
+            {"id": "V02", "time_range": "4.00-8.30s", "shows": "she opens it next to her father", "cast": ["P1", "P2"], "setting": "living room",
              "objects": ["gift box"], "text": [], "needs": ["V01"], "audio": sounds("V02")},
-            {"id": "V03", "shows": "a red sweater in the box", "cast": [], "setting": "living room",
+            {"id": "V03", "time_range": "8.30-11.00s", "shows": "a red sweater in the box", "cast": [], "setting": "living room",
              "objects": ["sweater"], "text": ["For you"], "needs": ["A08"], "audio": sounds("V03")},
         ],
     }
@@ -79,6 +80,8 @@ class UnitsTest(unittest.TestCase):
         oh = next(i for i, a in enumerate(audio) if a.text == "Oh")
         self.assertEqual((audio[oh + 1].kind, audio[oh + 2].text), ("gap", "A sweater."))
         self.assertLessEqual(max(a.dur for a in audio if a.kind == "gap"), 1.0)
+        breath = [{"word": "Oh", "start": 5.0, "end": 5.28}, {"word": "no", "start": 5.5, "end": 5.9}]
+        self.assertEqual([a.text for a in build_audio_units(breath, SHOTS) if a.kind == "speech"], ["Oh no"])
         self.assertEqual(len(build_audio_units([], [(0.0, 3.5)])), 4)
 
     def test_a_phrase_across_a_shot_cut_stays_one_unit_with_a_slot_in_each_shot(self):
@@ -117,13 +120,21 @@ class AnalysisTest(unittest.TestCase):
         text = analysis.build_prompt(self.audio, self.video)
         self.assertNotIn("{table}", text)
         self.assertNotIn("```json", text)
-        self.assertIn('V02 | 4.00-8.30s\n    A05 | 4.00-4.94s | (no words transcribed)\n'
-                      '    A06 | 4.94-5.33s | rough transcript: "Oh"', text.replace("5.34s", "5.33s"))
+        self.assertNotIn("{fields}", text)
+        self.assertIn('V02 | 4.00-8.30s\n    A05 | 4.00-4.84s | (no words transcribed)\n'
+                      '    A06 | 4.84-5.24s | rough transcript: "Oh"', text)
         self.assertIn('    A11a | 7.84-8.30s | rough transcript: "Thank you."\nV03 | 8.30-11.00s\n'
                       '    A11b | 8.30-8.96s | (continued)', text)
         self.assertIn("ONE THIRD of the frame's width", text)
+        self.assertNotIn("merely present", text)                # fields are explained in the schema only
+
+    @unittest.skipUnless(importlib.util.find_spec("pydantic"), "pydantic not installed")
+    def test_without_a_schema_the_prompt_explains_the_fields_itself(self):
+        text = analysis.build_prompt(self.audio, self.video, agentic=True)
+        self.assertIn("```json", text)
         self.assertIn("merely present", text)
-        self.assertIn("```json", analysis.build_prompt(self.audio, self.video, agentic=True))
+        self.assertLess(text.index("    cast: Ids of"), text.index("    shows: What is seen"))   # look, then describe
+        self.assertIn("        focus_x: Centre of the cropped picture", text)
 
     def test_a_good_answer_is_split_into_log_and_framing(self):
         described, framing, issues = analysis.clean(answer(self.audio, self.video), self.audio, self.video)
@@ -145,7 +156,7 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(self.points(raw, 0), [(0.0, "cut", 30)])                # nothing changes: one point
         self.assertEqual(self.points(raw, 1), [
             (4.0, "cut", 40),         # opens on her
-            (5.445, "cut", 70),       # he starts to speak: jump, at the time his line starts
+            (5.44, "cut", 70),        # he starts to speak: jump, at the time his line starts
             (6.88, "glide", 70),      # stays on him until the middle of A09 ...
             (7.52, "glide", 76),      # ... and follows him, there by the middle of A10
             (7.84, "cut", 40)])       # she speaks: jump back
@@ -160,7 +171,17 @@ class AnalysisTest(unittest.TestCase):
             if s["id"] in ("A06", "A07", "A08"):
                 s.update(kind=TALK, speaker="P1", focus_x={"A06": 40, "A07": 44, "A08": 48}[s["id"]])
         self.assertEqual(self.points(raw, 1)[:4],
-                         [(4.0, "cut", 40), (5.138, "glide", 40), (5.39, "glide", 44), (6.002, "glide", 48)])
+                         [(4.0, "cut", 40), (5.04, "glide", 40), (5.34, "glide", 44), (6.0, "glide", 48)])
+
+    def test_a_unit_described_under_the_wrong_time_range_is_reported(self):
+        raw = answer(self.audio, self.video)
+        raw["video_units"][1]["time_range"] = "4.00 - 8.30"                     # same range, written loosely: fine
+        raw["video_units"][2]["time_range"] = "4.00-8.30s"                      # V03 described as V02's stretch
+        raw["video_units"][2]["audio"][1]["time_range"] = "9.64-10.32s"
+        issues = analysis.clean(raw, self.audio, self.video)[2]
+        self.assertEqual(len(issues), 2)
+        self.assertIn("V03 was described as 4.00-8.30s but is 8.30-11.00s", issues[0])
+        self.assertIn("A12 was described as 9.64-10.32s", issues[1])
 
     def test_a_missing_or_bad_focus_keeps_the_last_position_in_the_shot(self):
         raw = answer(self.audio, self.video)
@@ -218,7 +239,7 @@ class AnalysisTest(unittest.TestCase):
             self.assertEqual((got["audio"], got["video"]), (self.audio, self.video))
             self.assertEqual(got["framing"]["shots"], framing["shots"])
             text = analysis.report(got)
-            self.assertIn("A08     5.45-  6.56s  focus  70%         dialogue_onscreen  P2: A sweater.  needs A02", text)
+            self.assertIn("A08     5.44-  6.56s  focus  70%         dialogue_onscreen  P2: A sweater.  needs A02", text)
             self.assertIn("A10     7.20-  7.84s  focus  73% >  76%  other", text)
             self.assertIn("A11b    8.30-  8.96s  focus  55%         dialogue_offscreen (continued)", text)
 

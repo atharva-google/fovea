@@ -21,6 +21,8 @@ def main(argv=None) -> None:
     a.add_argument("video", help="Path to the video")
     a.add_argument("--gemini-key", default=None, help="Gemini API key (or set GEMINI_API_KEY)")
     a.add_argument("--gemini-model", default=d.gemini_model)
+    a.add_argument("--gemini-fps", type=float, default=d.gemini_fps,
+                   help="Frames per second Gemini looks at (default: %(default)g)")
     a.add_argument("--thinking", choices=THINKING_LEVELS, default=d.thinking,
                    help="How hard Gemini thinks before it answers (default: the model decides)")
     a.add_argument("--agentic", action="store_true",
@@ -34,7 +36,7 @@ def main(argv=None) -> None:
 
     from . import analysis, gemini, pipeline
 
-    settings = Settings(gemini_model=args.gemini_model, thinking=args.thinking, agentic=args.agentic, whisper_model=args.whisper_model,
+    settings = Settings(gemini_model=args.gemini_model, gemini_fps=args.gemini_fps, thinking=args.thinking, agentic=args.agentic, whisper_model=args.whisper_model,
                         whisper_device=args.whisper_device, language=args.language, refresh=args.refresh,
                         force=args.force)
     try:

@@ -18,6 +18,7 @@ class GeminiError(RuntimeError):
 
 def ask_about_video(video_path: str | Path, prompt: str, api_key: str, model: str, api_version: str = "v1beta",
                     schema: Optional[str] = None, agentic: bool = False, thinking: str = "default",
+                    fps: Optional[float] = None,
                     log: Callable[[str], None] = print) -> Tuple[Dict[str, Any], float]:
     """Upload a video, ask one question, return ``(the answer as a dict, seconds it took)``.
 
@@ -26,6 +27,8 @@ def ask_about_video(video_path: str | Path, prompt: str, api_key: str, model: st
     schema, so the prompt must ask for one ```json block, which is parsed here.
     ``thinking``: how hard the model thinks before it answers: "minimal", "low", "medium" or "high";
     "default" leaves it to the model.
+    ``fps``: how many frames per second of the video the model looks at (standard mode; its own
+    default is 1, which misses shots shorter than a second).
     The upload is deleted afterwards."""
     if not api_key:
         raise GeminiError("A Gemini API key is required: pass --gemini-key or set GEMINI_API_KEY")
@@ -62,11 +65,13 @@ def ask_about_video(video_path: str | Path, prompt: str, api_key: str, model: st
         else:
             from . import schema as schemas
 
-            part = types.Part(file_data=file_data)
+            part = types.Part(file_data=file_data,
+                              video_metadata=types.VideoMetadata(fps=fps) if fps else None)
             options.update(response_mime_type="application/json",
                            response_schema=getattr(schemas, schema) if schema else None)
         config = types.GenerateContentConfig(**options) if options else None
-        log(f"  asking {model} ({'agentic' if agentic else 'standard'} video processing, thinking: {thinking}; "
+        log(f"  asking {model} ({'agentic' if agentic else 'standard'} video processing, "
+            f"{f'{fps:g} frames/s, ' if fps and not agentic else ''}thinking: {thinking}; "
             f"gives up after {REQUEST_TIMEOUT_S}s)")
         t0 = time.time()
         resp = client.models.generate_content(model=model, contents=[part, prompt], config=config)

@@ -32,6 +32,7 @@ class Settings:
     # ---- Gemini
     gemini_model: str = "gemini-3.8-flash"
     gemini_api_version: str = "v1beta"
+    gemini_fps: float = 4.0                # frames per second Gemini looks at (its own default is 1: too few for short shots)
     thinking: str = "default"              # "default" (the model decides) | "minimal" | "low" | "medium" | "high"
     agentic: bool = False                  # agentic video processing: no output schema, the answer is parsed from a JSON block
 

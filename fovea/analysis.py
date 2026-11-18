@@ -9,6 +9,9 @@
 Gemini is asked shot by shot, with the sounds of each shot under it. Because every focus position
 belongs to a sound, code knows exactly when it applies: Gemini never has to say when.
 
+The prompt here gives the task and the rules that span units. What each field means is written in
+ONE place, schema.py, which Gemini is given alongside the prompt.
+
 The answer is checked and stored as three files, so that each can change on its own later:
 
     prep/units.json          the units cut by code (times, rough transcript)
@@ -26,7 +29,7 @@ from .framing import position_at
 from .job import Job, read_json, write_json
 from .units import UNITS_VERSION, AudioUnit, VideoUnit, cut_units, slots
 
-ANALYSIS_VERSION = 3   # bump when the prompt or schema changes in a way that makes stored answers stale
+ANALYSIS_VERSION = 4   # bump when the prompt or schema changes in a way that makes stored answers stale
 KINDS = ("dialogue_onscreen", "dialogue_offscreen", "voiceover", "lyrics", "other")
 TALK = "dialogue_onscreen"
 
@@ -34,78 +37,39 @@ PROMPT = """You are a senior video editor logging the footage of an ad before it
 Watch and listen to the whole video carefully. Later steps work from your log WITHOUT seeing the video,
 so everything they need to know has to be in it.
 
-The video has already been cut into units with exact times (listed below):
-  VIDEO UNITS  one per shot (V01, V02, ...)
-  AUDIO UNITS  listed under the shot they play over (A01, A02, ...): a few spoken words, or up to a second of
+UNITS
+The video has already been cut into units with exact times, listed at the end (seconds from the start):
+  video units  one per shot (V01, V02, ...)
+  audio units  listed under the shot they play over (A01, A02, ...): a few spoken words, or up to a second of
                the sound between words. A sound that runs on into the next shot appears again there, marked
                (continued).
-Refer to units ONLY by their id. Never write timestamps.
+Describe every unit, in the order listed. For each one, first copy its id and time range exactly as listed,
+then look at and listen to THAT stretch of the video, and nothing else. Everywhere else, refer to units by
+their id and never by time.
 The rough transcript comes from speech-to-text and can have wrong words, miss sounds or invent words.
 Trust what you hear.
 
-Give:
-  summary  one or two sentences: the story of the ad
-  cast     ONLY the people who play a part in the story: they speak, are spoken to, or do something the story
-           depends on. As P1, P2, ... in order of first appearance. Someone who is merely present (sitting in the
-           room, part of a crowd, passing by) is NOT cast, however clearly they are seen. The same person is ONE
-           entry however often they appear, also if their clothes or the lighting change. For each:
-             real_name    their real name ONLY if this is a well-known person you recognise with confidence;
-                          otherwise empty. Never guess.
-             ad_name      the name the video itself gives them (spoken or on screen); otherwise empty
-             description  how they LOOK, so they can be told apart: apparent age and gender, hair, build,
-                          clothing. Nothing about what they do in the story.
+LOOKING AND LISTENING
+- Judge every shot by its own frames. A shot shorter than a second is often a close-up of an object or a
+  silent reaction: never carry people or actions over from the shot before it.
+- With several people in a shot, check hands and mouths separately. One person often speaks while another
+  does the thing that matters, and two people can say one line each within the same shot: for every audio
+  unit, decide afresh whose mouth is moving and whether the voice has changed.
 
-For EVERY video unit give:
-  shows    what is seen, in one sentence: who, doing what. People who are not in the cast are mentioned here.
-  cast     the ids of the cast members recognisably visible at ANY point in this shot, even briefly, partly
-           or from behind
-  setting  where it is, as a short label ("living room", "beach", "studio, white background"). Use exactly the
-           same wording for every shot in the same place.
-  objects  things that matter to the story or that someone would name: the product, props that are handled,
-           vehicles, animals. A few words each, and the same wording in every shot they appear in.
-  text     readable on-screen text that belongs to THIS shot (a price, a caption, a sign, end-card wording),
-           corrected. Leave out a logo or disclaimer that sits in the same place throughout the video.
-  needs    earlier units this shot makes NO SENSE without (a reaction needs what it reacts to; a reveal needs
-           its setup). A shot does NOT need another one just because it comes after it, shows the same scene or
-           continues the same action. Most shots need nothing. Only the DIRECT ones.
-  audio    every audio unit listed under this shot, in the same order. For each:
-    heard    what is REALLY heard. Write speech out exactly, in its own language and script, correcting the
-             rough transcript. Put any other sound in round brackets: (laughs), (door slams), (music), (silence).
-             Leave it empty for a unit marked (continued).
-    kind     dialogue_onscreen   spoken by someone whose face is SEEN saying it during this unit
-             dialogue_offscreen  spoken by someone in the scene who is NOT seen saying it (out of frame, back
-                                 to the camera, or the picture shows someone or something else)
-             voiceover           a narrator who is not seen saying it
-             lyrics              sung words that are part of the music
-             other               everything else: music, effects, a breath, a laugh, silence
-    speaker  the cast id of who says it. Decide by whose mouth is moving, not by who is most prominent in the
-             shot. Empty when nothing is spoken, or the voice is not a cast member.
-    needs    earlier units this sound makes NO SENSE without (a punchline needs its setup line). A sound does
-             NOT need the one before it just because it follows it. Most sounds need nothing.
-    focus_x  The video will be cropped to a narrow picture that uses the full height and only moves left and
-             right. For a vertical video it is only about ONE THIRD of the frame's width; whatever is outside
-             it is never seen. Give where that picture should be centred WHILE this sound plays, left to right,
-             as a percentage of the frame's width (0 = left edge, 50 = middle, 100 = right edge).
-             It is the centre of ONE person or thing, never the space between two. Choose, in this order:
-               1. the action or movement that is the punchline or the point of the shot
-               2. the main subject of the shot
-               3. in a wide shot with several people: the people the cropped picture has already shown in
-                  earlier shots, not someone its viewer has never seen
-               4. when someone speaks on screen: that person
-             If the subject moves during a shot, each unit gets the position where it is at that time.
-             While nothing changes, repeat exactly the same number.
-{json_note}
+REFRAMING
+The video will be cropped to a narrow picture that uses the full height and only moves left and right. For a
+vertical video it is only about ONE THIRD of the frame's width; whatever is outside it is never seen.
+focus_x says where that picture is centred while each sound plays. It follows what must be SEEN, which is not
+always the person who is heard.
+{fields}
+THE UNITS
 {table}
 """
 
-JSON_NOTE = """
-Think it through first if you like, then answer with ONE ```json block in exactly this shape:
-```json
-{"summary": "...",
- "cast": [{"id": "P1", "real_name": "", "ad_name": "", "description": "..."}],
- "video_units": [{"id": "V01", "shows": "...", "cast": ["P1"], "setting": "...", "objects": [], "text": [], "needs": [],
-                  "audio": [{"id": "A01", "heard": "...", "kind": "other", "speaker": "", "needs": [], "focus_x": 50}]}]}
-```
+FIELDS_NOTE = """
+ANSWER
+Think it through first if you like, then answer with ONE ```json block holding these fields, in this order:
+{outline}
 Include EVERY video unit, and under each one EVERY audio unit listed there.
 """
 
@@ -134,12 +98,12 @@ def run(job: Job, shots: Sequence[Dict[str, Any]], words: Sequence[Dict[str, Any
     raw, seconds = gemini.ask_about_video(
         job.proxy, build_prompt(audio, video, settings.agentic), api_key, settings.gemini_model,
         settings.gemini_api_version, schema="Analysis", agentic=settings.agentic,
-        thinking=settings.thinking, log=log)
+        thinking=settings.thinking, fps=settings.gemini_fps, log=log)
     described, framing, issues = clean(raw, audio, video)
     for issue in issues[:15]:
         log(f"  fixed: {issue}")
     save(job, audio, video, described, framing, {
-        "model": settings.gemini_model, "mode": "agentic" if settings.agentic else "standard", "thinking": settings.thinking,
+        "model": settings.gemini_model, "mode": "agentic" if settings.agentic else "standard", "thinking": settings.thinking, "fps": settings.gemini_fps,
         "seconds": seconds, "issues": issues})
     log(f"  stored: {job.units_json.name}, {job.log_json.name} (prep/) and framing/{job.framing_json.name}")
     return {"audio": audio, "video": video, "log": described, "framing": framing, "cached": False}
@@ -153,15 +117,24 @@ def build_prompt(audio: List[AudioUnit], video: List[VideoUnit], agentic: bool =
         under.setdefault(s["shot"], []).append(s)
     lines = []
     for v in video:
-        lines.append(f"{v.id} | {v.start:.2f}-{v.end:.2f}s")
+        lines.append(f"{v.id} | {_span(v.start, v.end)}")
         for s in under.get(v.id, []):
             a = sounds[s["audio"]]
             if s["part"]:
                 said = "(continued)"
             else:
                 said = f'rough transcript: "{a.text}"' if a.kind == "speech" else "(no words transcribed)"
-            lines.append(f"    {s['id']} | {s['start']:.2f}-{s['end']:.2f}s | {said}")
-    return PROMPT.replace("{json_note}", JSON_NOTE if agentic else "").replace("{table}", "\n".join(lines))
+            lines.append(f"    {s['id']} | {_span(s['start'], s['end'])} | {said}")
+    fields = ""
+    if agentic:                       # that mode takes no schema, so the fields are explained in the prompt
+        from .schema import outline
+
+        fields = FIELDS_NOTE.replace("{outline}", outline())
+    return PROMPT.replace("{fields}", fields).replace("{table}", "\n".join(lines))
+
+
+def _span(start: float, end: float) -> str:
+    return f"{start:.2f}-{end:.2f}s"
 
 
 # =========================================================================== checking the answer
@@ -184,6 +157,13 @@ def clean(raw: Dict[str, Any], audio: List[AudioUnit], video: List[VideoUnit]
             if x and x not in out:
                 out.append(x)
         return out
+
+    def anchored(uid: str, g: Dict[str, Any], start_s: float, end_s: float) -> None:
+        """Gemini copies each unit's time range before describing it. A wrong copy means it lost its place."""
+        echo = str(g.get("time_range") or "").replace(" ", "")
+        if echo and echo.rstrip("s") != _span(start_s, end_s).rstrip("s"):
+            issues.append(f"{uid} was described as {echo} but is {_span(start_s, end_s)}: "
+                          f"it may describe another part of the video")
 
     def needs(uid: str, value: Any) -> List[str]:
         out = []
@@ -220,6 +200,7 @@ def clean(raw: Dict[str, Any], audio: List[AudioUnit], video: List[VideoUnit]
         if g is None:
             issues.append(f"{v.id} missing from the answer")
             g = {}
+        anchored(v.id, g, v.start, v.end)
         seen = words(g.get("cast"))
         issues += [f"{v.id} lists {c!r}, who is not in the cast: ignored" for c in seen if c not in cast_ids]
         video_out.append({"id": v.id, "shows": str(g.get("shows") or ""), "cast": [c for c in seen if c in cast_ids],
@@ -236,6 +217,7 @@ def clean(raw: Dict[str, Any], audio: List[AudioUnit], video: List[VideoUnit]
         if g is None:
             issues.append(f"{s['id']} missing from the answer")
             g = {}
+        anchored(s["id"], g, s["start"], s["end"])
         head = first.get(a.id)
         kind = str(g.get("kind") or "").strip()
         if kind not in KINDS:

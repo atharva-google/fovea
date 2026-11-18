@@ -19,7 +19,8 @@ python -m fovea analyze my_ad.mp4
 
 It prints the cast, every shot (with what the cropped picture must show, and when that changes) and
 every piece of sound. Running it again reuses what is stored; `--refresh` asks Gemini again.
-`--thinking minimal|low|medium|high` sets how hard Gemini thinks before it answers (default: the model
+`--gemini-fps` sets how many frames per second Gemini looks at (default 4; its own default of 1 misses
+shots shorter than a second). `--thinking minimal|low|medium|high` sets how hard Gemini thinks before it answers (default: the model
 decides); use it with `--refresh` to compare levels on a video that is already analysed.
 
 ## What happens
@@ -31,7 +32,8 @@ video ──┬── sound ── transcript (Whisper, word times) ──┐
 
 The two branches run at the same time. Code then cuts the video into **video units** (one per shot)
 and **audio units** (a few spoken words, or the sound between them). Gemini watches the video once
-and describes every unit by id; it never writes a timestamp.
+and describes every unit by id. It copies each unit's time range to keep its place, but every time used
+later comes from code.
 
 Gemini is asked shot by shot, with the sounds of each shot listed under it. For every sound it also
 says where the cropped picture should be centred while that sound plays. Because each position
