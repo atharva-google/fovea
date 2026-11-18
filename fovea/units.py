@@ -1,10 +1,13 @@
 """Cut one video into units, on two tracks that each cover the whole video. Code only.
 
-    video units  V01, V02, ...  one per shot. Each lists the moments at which Gemini is asked where
-                                the picture should be centred (``focus_times``).
-    audio units  A01, A02, ...  a few spoken words, or the sound between them ("gap"). Split at
-                                every audible pause and at punctuation. A phrase that runs across a
-                                shot cut stays ONE unit (a word cannot be split).
+    video units  V01, V02, ...  one per shot.
+    audio units  A01, A02, ...  a few spoken words, or the sound between them ("gap", in chunks of at
+                                most a second). Split at every audible pause and at punctuation. A
+                                phrase that runs across a shot cut stays ONE unit (a word cannot be
+                                split).
+    slots                       every audio unit, split at the shot cuts it runs across: the part of
+                                a sound that plays over ONE shot. Gemini describes the video shot by
+                                shot, with the slots of each shot under it.
 
 Gemini only ever names these ids; every time used later comes from here.
 """
@@ -16,7 +19,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Sequence, Tuple
 
-UNITS_VERSION = 1   # bump when the cutting rules change in a way that makes stored units stale
+UNITS_VERSION = 2   # bump when the cutting rules change in a way that makes stored units stale
 
 _PUNCT = re.compile(r"[.?!,;:\u0964]$")   # \u0964 = the Devanagari full stop
 
@@ -28,7 +31,6 @@ class VideoUnit:
     id: str
     start: float
     end: float
-    focus_times: List[float] = field(default_factory=list)
 
     @property
     def dur(self) -> float:
@@ -39,7 +41,7 @@ class VideoUnit:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "VideoUnit":
-        return cls(str(d["id"]), float(d["start"]), float(d["end"]), [float(t) for t in d.get("focus_times") or []])
+        return cls(str(d["id"]), float(d["start"]), float(d["end"]))
 
 
 @dataclass
@@ -79,22 +81,33 @@ def cut_units(shots: Sequence[Span], words: Sequence[Dict[str, Any]]) -> Tuple[L
 # =========================================================================== video units
 def build_video_units(shots: Sequence[Span]) -> List[VideoUnit]:
     spans = [(float(a), float(b)) for a, b in shots if float(b) > float(a)]
-    return [VideoUnit(f"V{i + 1:02d}", round(a, 3), round(b, 3), focus_times(a, b)) for i, (a, b) in enumerate(spans)]
+    return [VideoUnit(f"V{i + 1:02d}", round(a, 3), round(b, 3)) for i, (a, b) in enumerate(spans)]
 
 
-def focus_times(start: float, end: float, last_gap: float = 0.5, frame: float = 0.04) -> List[float]:
-    """The moments of a shot to ask a focus position for: its start, every full second after it, and
-    its last frame if that is at least ``last_gap`` seconds after the previous moment."""
-    times = [round(start + k, 2) for k in range(max(1, math.ceil(end - start - 1e-6)))]
-    last = round(end - frame, 2)
-    if last - times[-1] >= last_gap:
-        times.append(last)
-    return times
+def slots(audio: Sequence[AudioUnit], video: Sequence[VideoUnit], min_part: float = 0.25) -> List[Dict[str, Any]]:
+    """Every audio unit, split at the shot cuts it runs across: ``[{"id", "audio", "shot", "start",
+    "end", "part"}]`` in time order. A unit over one shot is one slot with the unit's own id; otherwise
+    the id plus a letter (A05a, A05b). Slivers shorter than ``min_part`` stay with their neighbour."""
+    out: List[Dict[str, Any]] = []
+    for a in audio:
+        parts = [[max(a.start, v.start), min(a.end, v.end), v.id] for v in video
+                 if min(a.end, v.end) - max(a.start, v.start) > 1e-6]
+        while len(parts) > 1:
+            k = min(range(len(parts)), key=lambda j: parts[j][1] - parts[j][0])
+            if parts[k][1] - parts[k][0] >= min_part:
+                break
+            j = k - 1 if k > 0 else k + 1
+            lo, hi = min(j, k), max(j, k)
+            parts[lo:hi + 1] = [[parts[lo][0], parts[hi][1], parts[j][2]]]
+        for i, (start, end, shot) in enumerate(parts):
+            out.append({"id": a.id if len(parts) == 1 else f"{a.id}{chr(97 + i)}", "audio": a.id, "shot": shot,
+                        "start": round(start, 3), "end": round(end, 3), "part": i})
+    return out
 
 
 # =========================================================================== audio units
 def build_audio_units(words: Sequence[Dict[str, Any]], shots: Sequence[Span], min_gap: float = 0.15,
-                      max_gap: float = 2.5, pad: float = 0.06) -> List[AudioUnit]:
+                      max_gap: float = 1.0, pad: float = 0.06) -> List[AudioUnit]:
     """Tile ``[0, end of the last shot]`` with speech and gap units.
 
     ``min_gap``: a pause at least this long is its own unit (so it can be cut); shorter pauses are

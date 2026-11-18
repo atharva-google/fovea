@@ -31,6 +31,11 @@ The two branches run at the same time. Code then cuts the video into **video uni
 and **audio units** (a few spoken words, or the sound between them). Gemini watches the video once
 and describes every unit by id; it never writes a timestamp.
 
+Gemini is asked shot by shot, with the sounds of each shot listed under it. For every sound it also
+says where the cropped picture should be centred while that sound plays. Because each position
+belongs to a sound, code knows exactly when it applies: the picture jumps when a new person starts to
+speak, and glides when a subject moves.
+
 ## Where files go
 
 Everything a run creates stays in the project folder, under `fovea_data/` (ignored by git):

@@ -1,10 +1,9 @@
 """Where the picture is centred at a given time, from the stored focus points of one shot.
 
-A shot's points are ``[{"t", "move", "x", "left", "right", "on", "at"}]`` in time order (seconds in
-the video; positions as a percentage of the frame width). ``move`` says how a point is reached:
+A shot's points are ``[{"t", "move", "x", "slot"}]`` in time order (``t`` in seconds in the video,
+``x`` as a percentage of the frame width). ``move`` says how a point is reached:
 
-    "cut"    the picture jumps there at ``t`` (a new shot, or the focus changes to another subject
-             when a sound starts)
+    "cut"    the picture jumps there at ``t`` (a new shot, or someone starts / stops speaking)
     "glide"  the picture moves there evenly from the point before it (a subject that moves)
 """
 
@@ -14,7 +13,7 @@ from typing import Any, Dict, Sequence
 
 
 def position_at(points: Sequence[Dict[str, Any]], t: float, key: str = "x") -> float:
-    """The value of ``key`` ("x", "left" or "right") at time ``t`` within the shot."""
+    """The value of ``key`` at time ``t`` within the shot."""
     k = max((i for i, p in enumerate(points) if p["t"] <= t + 1e-9), default=0)
     here = points[k]
     if k + 1 < len(points) and points[k + 1]["move"] == "glide":

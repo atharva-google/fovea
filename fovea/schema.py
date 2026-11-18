@@ -17,14 +17,27 @@ class CastMember(BaseModel):
                                          "build, clothing. Nothing about what they do in the story.")
 
 
-class FocusPoint(BaseModel):
-    at: str = Field(description="When this focus takes over. Empty string = the start of the shot. An audio unit id "
-                                "(A07) = when that sound starts. Or one of the shot's marks, written as listed "
-                                "(5.00) = at that moment, for a subject that moves.")
-    left: int = Field(description="Left edge of the thing to keep in the picture, in thousandths of the frame width: "
-                                  "0 = the frame's left edge, 1000 = its right edge.")
-    right: int = Field(description="Its right edge, on the same scale.")
-    on: str = Field(description="What it is, in a few words ('P1's face', 'the pack').")
+class Kind(str, Enum):
+    dialogue_onscreen = "dialogue_onscreen"     # spoken by someone whose face is SEEN saying it
+    dialogue_offscreen = "dialogue_offscreen"   # spoken by someone in the scene who is not seen saying it
+    voiceover = "voiceover"                     # a narrator
+    lyrics = "lyrics"                           # sung words that are part of the music
+    other = "other"                             # music, effects, a breath, silence
+
+
+class AudioUnit(BaseModel):
+    id: str = Field(description="The id as listed under the shot, e.g. A05 or A05b. Each appears exactly once.")
+    heard: str = Field(description="What is REALLY heard. Speech written out and corrected from the rough "
+                                   "transcript. Other sounds in round brackets: '(laughs)', '(music)', '(silence)'. "
+                                   "Empty for a part marked (continued).")
+    kind: Kind
+    speaker: str = Field(description="The cast id of who says it. Empty when nothing is spoken, or the voice is not "
+                                     "a cast member.")
+    needs: List[str] = Field(description="EARLIER units (audio or video ids) this sound makes no sense without. Not "
+                                         "the sound that merely comes before it. Most sounds need nothing.")
+    focus_x: int = Field(description="Where the cropped picture should be centred WHILE this sound plays: the centre "
+                                     "of ONE person or thing, left to right, as a percentage of the frame width "
+                                     "(0 = left edge, 50 = middle, 100 = right edge).")
 
 
 class VideoUnit(BaseModel):
@@ -39,28 +52,7 @@ class VideoUnit(BaseModel):
                                         "disclaimer that sits in the same place throughout the video.")
     needs: List[str] = Field(description="EARLIER units (video or audio ids) this shot makes no sense without. Not a "
                                          "shot that merely comes before it. Most shots need nothing.")
-    focus: List[FocusPoint] = Field(description="What the cropped picture must show, in time order. The first "
-                                                "entry is for the start of the shot; add one only when the focus "
-                                                "changes or the subject moves. Most shots need a single entry.")
-
-
-class Kind(str, Enum):
-    dialogue_onscreen = "dialogue_onscreen"     # spoken by someone whose face is SEEN saying it
-    dialogue_offscreen = "dialogue_offscreen"   # spoken by someone in the scene who is not seen saying it
-    voiceover = "voiceover"                     # a narrator
-    lyrics = "lyrics"                           # sung words that are part of the music
-    other = "other"                             # music, effects, a breath, silence
-
-
-class AudioUnit(BaseModel):
-    id: str = Field(description="Audio unit id, e.g. A05. Every audio unit appears exactly once.")
-    heard: str = Field(description="What is REALLY heard. Speech written out and corrected from the rough "
-                                   "transcript. Other sounds in round brackets: '(laughs)', '(music)', '(silence)'.")
-    kind: Kind
-    speaker: str = Field(description="Who says it: a cast id, 'voiceover' for a narrator who is not in the cast, "
-                                     "'other' for any other unseen or unlisted voice, or empty when nothing is spoken.")
-    needs: List[str] = Field(description="EARLIER units (audio or video ids) this sound makes no sense without. Not "
-                                         "the sound that merely comes before it. Most sounds need nothing.")
+    audio: List[AudioUnit] = Field(description="Every audio unit listed under this shot, in the same order.")
 
 
 class Analysis(BaseModel):
@@ -69,4 +61,3 @@ class Analysis(BaseModel):
                                                "to, or do something the story depends on. Not people who are merely "
                                                "present.")
     video_units: List[VideoUnit]
-    audio_units: List[AudioUnit]
