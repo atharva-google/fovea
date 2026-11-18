@@ -1,0 +1,5 @@
+# needs ffmpeg on the machine (apt install ffmpeg / brew install ffmpeg)
+scenedetect[opencv]
+faster-whisper>=1.1.0
+google-genai
+numpy

@@ -1,0 +1,17 @@
+# everything a run creates, and downloaded models
+fovea_data/
+weights/
+
+# media
+*.mp4
+*.mov
+*.mkv
+*.wav
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+.DS_Store
