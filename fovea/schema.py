@@ -18,10 +18,13 @@ class CastMember(BaseModel):
 
 
 class FocusPoint(BaseModel):
-    x: int = Field(description="Where the cropped picture should be centred at this moment, left to right, as a "
-                                "percentage of the frame width: 0 = left edge, 50 = middle, 100 = right edge.")
-    on: str = Field(description="What is at that position, in a few words ('P1's face', 'the pack'). Fill it in for "
-                                "the first moment of a shot and whenever it changes; otherwise an empty string.")
+    at: str = Field(description="When this focus takes over. Empty string = the start of the shot. An audio unit id "
+                                "(A07) = when that sound starts. Or one of the shot's marks, written as listed "
+                                "(5.00) = at that moment, for a subject that moves.")
+    left: int = Field(description="Left edge of the thing to keep in the picture, in thousandths of the frame width: "
+                                  "0 = the frame's left edge, 1000 = its right edge.")
+    right: int = Field(description="Its right edge, on the same scale.")
+    on: str = Field(description="What it is, in a few words ('P1's face', 'the pack').")
 
 
 class VideoUnit(BaseModel):
@@ -36,8 +39,9 @@ class VideoUnit(BaseModel):
                                         "disclaimer that sits in the same place throughout the video.")
     needs: List[str] = Field(description="EARLIER units (video or audio ids) this shot makes no sense without. Not a "
                                          "shot that merely comes before it. Most shots need nothing.")
-    focus: List[FocusPoint] = Field(description="One entry for EACH moment listed after 'focus at' for this shot, in "
-                                                "the same order.")
+    focus: List[FocusPoint] = Field(description="What the cropped picture must show, in time order. The first "
+                                                "entry is for the start of the shot; add one only when the focus "
+                                                "changes or the subject moves. Most shots need a single entry.")
 
 
 class Kind(str, Enum):
@@ -61,7 +65,8 @@ class AudioUnit(BaseModel):
 
 class Analysis(BaseModel):
     summary: str = Field(description="One or two sentences: the story of the video.")
-    cast: List[CastMember] = Field(description="Everyone who speaks or is clearly the subject of at least one shot. "
-                                               "Not background people or crowds.")
+    cast: List[CastMember] = Field(description="Only people who play a part in the story: they speak, are spoken "
+                                               "to, or do something the story depends on. Not people who are merely "
+                                               "present.")
     video_units: List[VideoUnit]
     audio_units: List[AudioUnit]

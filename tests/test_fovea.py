@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 from fovea import analysis, gemini, media, transcript
+from fovea.framing import position_at
 from fovea.job import Job
 from fovea.units import build_audio_units, cut_units, focus_times
 
@@ -39,15 +40,15 @@ def answer(audio, video):
         "video_units": [
             {"id": "V01", "shows": "a woman walks in with a gift", "cast": ["P1"], "setting": "living room",
              "objects": ["gift box"], "text": [], "needs": [],
-             "focus": [{"x": 40, "on": "P1's face"}, {"x": 40, "on": ""}, {"x": 40, "on": ""}, {"x": 40, "on": ""},
-                       {"x": 42, "on": ""}]},
+             "focus": [{"at": "", "left": 300, "right": 500, "on": "P1's face"}]},
             {"id": "V02", "shows": "her face falls", "cast": ["P1"], "setting": "living room", "objects": ["gift box"],
              "text": [], "needs": ["V01"],
-             "focus": [{"x": 48, "on": "P1's face"}, {"x": 48, "on": ""}, {"x": 72, "on": "the gift box"},
-                       {"x": 72, "on": ""}, {"x": 72, "on": ""}]},
+             "focus": [{"at": "", "left": 400, "right": 560, "on": "P1's face"},
+                       {"at": line.id, "left": 640, "right": 800, "on": "the gift box"},
+                       {"at": "7.00", "left": 700, "right": 860, "on": ""}]},
             {"id": "V03", "shows": "a red sweater in the box", "cast": [], "setting": "living room",
              "objects": ["sweater"], "text": ["For you"], "needs": [line.id],
-             "focus": [{"x": 55, "on": "the sweater"}, {"x": 55, "on": ""}, {"x": 55, "on": ""}, {"x": 55, "on": ""}]},
+             "focus": [{"at": "", "left": 450, "right": 650, "on": "the sweater"}]},
         ],
         "audio_units": [{"id": a.id, "heard": a.text or "(silence)", "kind": "dialogue_onscreen" if a.text else "other",
                          "speaker": "P1" if a.text else "", "needs": [setup.id] if a.id == line.id else []}
@@ -95,7 +96,9 @@ class AnalysisTest(unittest.TestCase):
         text = analysis.build_prompt(self.audio, self.video)
         self.assertNotIn("{table}", text)
         self.assertNotIn("```json", text)
-        self.assertIn("V02 | 4.00-8.30s | focus at: 4.00, 5.00, 6.00, 7.00, 8.00", text)
+        self.assertIn("V02 | 4.00-8.30s | marks: 4.00, 5.00, 6.00, 7.00, 8.00", text)
+        self.assertIn("ONE THIRD of the frame's width", text)
+        self.assertIn("merely present", text)
         self.assertIn('| over V02 | rough transcript: "A sweater."', text)
         self.assertIn("(no words transcribed)", text)
         self.assertIn("```json", analysis.build_prompt(self.audio, self.video, agentic=True))
@@ -105,21 +108,39 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(issues, [])
         self.assertNotIn("focus", described["video_units"][0])
         self.assertEqual(described["cast"][0]["ad_name"], "Mira")
-        v2 = framing["shots"][1]
-        self.assertEqual(v2["times"], [4.0, 5.0, 6.0, 7.0, 8.0])
-        self.assertEqual(v2["x"], [48, 48, 72, 72, 72])
-        self.assertEqual(v2["on"], ["P1's face", "P1's face", "the gift box", "the gift box", "the gift box"])
+        line = next(a for a in self.audio if a.text == "A sweater.")
+        v2 = framing["shots"][1]["points"]
+        self.assertEqual([(p["t"], p["move"], p["x"], p["on"]) for p in v2],
+                         [(4.0, "cut", 48.0, "P1's face"),              # opens on her face
+                          (line.start, "cut", 72.0, "the gift box"),    # jumps when the line starts (Whisper's time)
+                          (7.0, "glide", 78.0, "the gift box")])        # then follows it to the 7 s mark
+        self.assertEqual((v2[1]["left"], v2[1]["right"]), (64.0, 80.0))
+        self.assertEqual(len(framing["shots"][0]["points"]), 1)
 
-    def test_a_wrong_number_of_positions_is_spread_over_the_shot_and_reported(self):
+    def test_focus_entries_that_cannot_be_placed_are_left_out_and_reported(self):
         raw = answer(self.audio, self.video)
-        raw["video_units"][0]["focus"] = [{"x": 20, "on": "left"}, {"x": 80, "on": "right"}]     # 2 for 5 moments
-        raw["video_units"][1]["focus"] = []
-        raw["video_units"][2]["focus"] = [{"x": 250, "on": "x"}, {"x": "?"}, {"x": -5}, {"x": 50}, {"x": 50}]
+        first_sound = self.audio[0].id                                  # plays over V01, not over V03
+        raw["video_units"][0]["focus"] = []
+        raw["video_units"][1]["focus"] = [{"at": "6.9", "left": 900, "right": 700, "on": "late"}]
+        raw["video_units"][2]["focus"] = [{"at": "", "left": 1500, "right": -20, "on": "wide"},
+                                          {"at": first_sound, "left": 1, "right": 2, "on": "x"},
+                                          {"at": "soon", "left": 1, "right": 2, "on": "x"}, {"at": "", "left": "?"}]
         _, framing, issues = analysis.clean(raw, self.audio, self.video)
-        self.assertEqual(framing["shots"][0]["x"], [20, 20, 20, 80, 80])
-        self.assertEqual(framing["shots"][1]["x"], [50] * 5)
-        self.assertEqual(framing["shots"][2]["x"], [100, 0, 50, 50])
-        self.assertEqual(len([i for i in issues if "focus" in i]), 2)
+        middle = framing["shots"][0]["points"]
+        self.assertEqual([(p["t"], p["x"]) for p in middle], [(0.0, 50.0)])
+        late = framing["shots"][1]["points"]                             # nothing for the start: opens on it
+        self.assertEqual([(p["t"], p["move"], p["left"], p["right"]) for p in late],
+                         [(4.0, "cut", 70.0, 90.0), (7.0, "glide", 70.0, 90.0)])
+        self.assertEqual([(p["left"], p["right"]) for p in framing["shots"][2]["points"]], [(0.0, 100.0)])
+        self.assertEqual(len([i for i in issues if "focus" in i]), 4)
+
+    def test_the_picture_jumps_on_a_cut_and_moves_evenly_on_a_glide(self):
+        points = [{"t": 4.0, "move": "cut", "x": 40.0, "left": 30.0}, {"t": 5.5, "move": "cut", "x": 70.0, "left": 60.0},
+                  {"t": 7.0, "move": "glide", "x": 80.0, "left": 70.0}]
+        self.assertEqual([position_at(points, t) for t in (4.0, 5.49, 5.5, 6.25, 7.0, 8.2)],
+                         [40.0, 40.0, 70.0, 75.0, 80.0, 80.0])
+        self.assertEqual(position_at(points, 6.25, "left"), 65.0)
+        self.assertEqual(position_at(points, 0.0), 40.0)
 
     def test_ids_cast_speakers_kinds_and_needs_are_checked(self):
         raw = answer(self.audio, self.video)
@@ -150,8 +171,10 @@ class AnalysisTest(unittest.TestCase):
             got = analysis.load(job)
             self.assertEqual((got["audio"], got["video"]), (self.audio, self.video))
             self.assertEqual(got["framing"]["shots"], framing["shots"])
-            self.assertIn("focus: 4.0s 48% [P1's face]  5.0s 48%  6.0s 72% [the gift box]", analysis.report(got))
-            self.assertIn("dialogue_onscreen", analysis.report(got))
+            text = analysis.report(got)
+            self.assertIn("focus:   4.00s opens on   48% (40-56)  P1's face", text)
+            self.assertIn("glides to  78% (70-86)  the gift box", text)
+            self.assertIn("dialogue_onscreen", text)
 
             src.write_bytes(b"a different video with the same name")
             job = Job.open(src, Path(d, "fovea_data"))                                 # the folder is emptied

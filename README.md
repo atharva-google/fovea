@@ -17,7 +17,7 @@ export GEMINI_API_KEY=...
 python -m fovea analyze my_ad.mp4
 ```
 
-It prints the cast, every shot (with where the picture should be centred, second by second) and
+It prints the cast, every shot (with what the cropped picture must show, and when that changes) and
 every piece of sound. Running it again reuses what is stored; `--refresh` asks Gemini again.
 
 ## What happens
@@ -60,6 +60,7 @@ fovea/
 ├── transcript.py   Whisper -> transcript.csv
 ├── units.py        video units and audio units
 ├── analysis.py     the base analysis: prompt, checking the answer, storage
+├── framing.py      where the picture is centred at a given time
 ├── schema.py       the shape Gemini answers in
 └── gemini.py       one question to Gemini about one video
 tests/              python -m unittest discover -s tests

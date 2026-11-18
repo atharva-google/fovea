@@ -2,7 +2,7 @@
 
   * the cast
   * for every video unit (shot): what is seen, who is in it, the setting, objects, on-screen text,
-    what it depends on, and WHERE THE PICTURE SHOULD BE CENTRED at each moment code asks about
+    what it depends on, and WHAT THE CROPPED PICTURE MUST SHOW (where it is, and when that changes)
   * for every audio unit: what is really heard, what kind of sound it is, who says it, and what it
     depends on
 
@@ -10,7 +10,7 @@ The answer is checked and stored as three files, so that each can change on its 
 
     prep/units.json          the units cut by code (times, rough transcript, focus moments)
     prep/log.json            the cast and the description of every unit
-    framing/framing.json     per shot: the focus moments, the position at each, and what it is on
+    framing/framing.json     per shot: focus points (when, where, on what, cut or glide); see framing.py
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from .config import Settings
 from .job import Job, read_json, write_json
 from .units import UNITS_VERSION, AudioUnit, VideoUnit, cut_units
 
-ANALYSIS_VERSION = 1   # bump when the prompt or schema changes in a way that makes stored answers stale
+ANALYSIS_VERSION = 2   # bump when the prompt or schema changes in a way that makes stored answers stale
 KINDS = ("dialogue_onscreen", "dialogue_offscreen", "voiceover", "lyrics", "other")
 
 PROMPT = """You are a senior video editor logging the footage of an ad before it is cut down and reframed.
@@ -39,9 +39,10 @@ Trust what you hear.
 
 Give:
   summary  one or two sentences: the story of the ad
-  cast     everyone who speaks or is clearly the subject of at least one shot, as P1, P2, ... in order of first
-           appearance. NOT background people or crowds. The same person is ONE entry however often they appear,
-           also if their clothes or the lighting change. For each:
+  cast     ONLY the people who play a part in the story: they speak, are spoken to, or do something the story
+           depends on. As P1, P2, ... in order of first appearance. Someone who is merely present (sitting in the
+           room, part of a crowd, passing by) is NOT cast, however clearly they are seen. The same person is ONE
+           entry however often they appear, also if their clothes or the lighting change. For each:
              real_name    their real name ONLY if this is a well-known person you recognise with confidence;
                           otherwise empty. Never guess.
              ad_name      the name the video itself gives them (spoken or on screen); otherwise empty
@@ -62,16 +63,24 @@ For EVERY video unit give:
   needs    earlier units this shot makes NO SENSE without (a reaction needs what it reacts to; a reveal needs
            its setup). A shot does NOT need another one just because it comes after it, shows the same scene or
            continues the same action. Most shots need nothing. Only the DIRECT ones.
-  focus    The video will be cropped to a narrower picture (for example vertical) that uses the full height and
-           can only move left and right. For EACH moment listed after "focus at" give one entry, in the same
-           order and the same number of entries:
-             x   where the cropped picture should be centred at that moment, left to right, as a percentage of
-                 the frame width (0 = left edge, 50 = middle, 100 = right edge)
-             on  what is at that position, in a few words ("P1's face", "the pack"). Fill it in for the first
-                 moment of a shot and whenever it changes; otherwise leave it empty.
-           Centre on what the viewer must see at that moment: the person speaking on screen, otherwise the
-           subject of the shot or the product. While the subject stays where it is, repeat the SAME x: do not
-           wobble by a few points. When two people talk in turn, x goes to whoever is speaking at that moment.
+  focus    The video will be cropped to a narrow picture that uses the full height and only moves left and right.
+           For a vertical video that picture is only about ONE THIRD of the frame's width: whatever is outside it
+           is never seen. Say what the picture must show, as a short list in time order. Each entry:
+             at     when it takes over: "" for the start of the shot (the first entry); an audio unit id when the
+                    focus changes as that sound starts (the other person begins to speak); or one of the shot's
+                    marks, written exactly as listed, for a subject that MOVES
+             left, right   the left and right edges of the thing to keep in the picture, in thousandths of the
+                    frame's width (0 = the frame's left edge, 1000 = its right edge). For a person, the edges of
+                    their head and shoulders.
+             on     what it is, in a few words ("P1's face", "the pack")
+           Most shots need ONE entry. Add entries only when the focus changes or the subject moves:
+             - two people talking in turn: one entry per turn, "at" the audio unit in which that person starts
+             - a subject that moves across the frame: one entry at each mark while it moves, following it
+           What to focus on, in this order when they conflict:
+             1. the action or movement that IS the punchline or the point of the shot
+             2. the main subject of the shot: the person speaking on screen, otherwise who or what it is about
+             3. in a wide shot with several people: the people the cropped picture has ALREADY shown in earlier
+                shots. Do not bring into the picture someone the viewer of the cropped video has not seen before.
 
 For EVERY audio unit give:
   heard    what is REALLY heard. Write speech out exactly, in its own language and script, correcting the rough
@@ -97,7 +106,8 @@ Think it through first if you like, then answer with ONE ```json block in exactl
 {"summary": "...",
  "cast": [{"id": "P1", "real_name": "", "ad_name": "", "description": "..."}],
  "video_units": [{"id": "V01", "shows": "...", "cast": ["P1"], "setting": "...", "objects": [], "text": [],
-                  "needs": [], "focus": [{"x": 50, "on": "..."}, {"x": 50, "on": ""}]}],
+                  "needs": [], "focus": [{"at": "", "left": 300, "right": 480, "on": "..."},
+                                         {"at": "A03", "left": 620, "right": 800, "on": "..."}]}],
  "audio_units": [{"id": "A01", "heard": "...", "kind": "other", "speaker": "", "needs": []}]}
 ```
 Include EVERY video unit and EVERY audio unit.
@@ -142,7 +152,7 @@ def run(job: Job, shots: Sequence[Dict[str, Any]], words: Sequence[Dict[str, Any
 def build_prompt(audio: List[AudioUnit], video: List[VideoUnit], agentic: bool = False) -> str:
     lines = ["VIDEO UNITS"]
     for v in video:
-        lines.append(f"{v.id} | {v.start:.2f}-{v.end:.2f}s | focus at: {', '.join(f'{t:.2f}' for t in v.focus_times)}")
+        lines.append(f"{v.id} | {v.start:.2f}-{v.end:.2f}s | marks: {', '.join(f'{t:.2f}' for t in v.focus_times)}")
     lines += ["", "AUDIO UNITS"]
     for a in audio:
         said = f'rough transcript: "{a.text}"' if a.kind == "speech" else "(no words transcribed)"
@@ -154,7 +164,7 @@ def build_prompt(audio: List[AudioUnit], video: List[VideoUnit], agentic: bool =
 def clean(raw: Dict[str, Any], audio: List[AudioUnit], video: List[VideoUnit]
           ) -> Tuple[Dict[str, Any], Dict[str, Any], List[str]]:
     """``(log, framing, issues)``: only known ids, every unit present, ``needs`` pointing backwards,
-    and exactly one focus position per focus moment."""
+    and every focus entry turned into a point with a real time (see ``framing.py``)."""
     issues: List[str] = []
     start = {u.id: u.start for u in [*audio, *video]}
 
@@ -192,6 +202,7 @@ def clean(raw: Dict[str, Any], audio: List[AudioUnit], video: List[VideoUnit]
     got_v, got_a = by_id(raw.get("video_units")), by_id(raw.get("audio_units"))
     issues += [f"unknown unit {uid!r} ignored" for uid in [*got_v, *got_a] if uid not in start]
 
+    sounds = {a.id: a for a in audio}
     video_out, shots_out = [], []
     for v in video:
         g = got_v.get(v.id)
@@ -203,11 +214,9 @@ def clean(raw: Dict[str, Any], audio: List[AudioUnit], video: List[VideoUnit]
         video_out.append({"id": v.id, "shows": str(g.get("shows") or ""), "cast": [c for c in seen if c in cast_ids],
                           "setting": str(g.get("setting") or "").strip(), "objects": words(g.get("objects")),
                           "text": words(g.get("text")), "needs": needs(v.id, g.get("needs"))})
-        points, note = _focus(g.get("focus"), len(v.focus_times))
-        if note:
-            issues.append(f"{v.id} focus: {note}")
-        shots_out.append({"id": v.id, "times": list(v.focus_times), "x": [x for x, _ in points],
-                          "on": [on for _, on in points]})
+        points, notes = _focus(g.get("focus"), v, sounds)
+        issues += [f"{v.id} focus: {n}" for n in notes]
+        shots_out.append({"id": v.id, "points": points})
 
     audio_out = []
     for a in audio:
@@ -231,25 +240,50 @@ def clean(raw: Dict[str, Any], audio: List[AudioUnit], video: List[VideoUnit]
     return described, {"shots": shots_out}, issues
 
 
-def _focus(entries: Any, n: int) -> Tuple[List[Tuple[int, str]], str]:
-    """Exactly ``n`` ``(x, on)`` pairs from Gemini's entries, with ``on`` carried forward where it was
-    left empty. A wrong number of entries is stretched evenly over the shot; none means the middle."""
-    points: List[Tuple[int, str]] = []
+def _focus(entries: Any, shot: VideoUnit, sounds: Dict[str, AudioUnit]) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Gemini's focus entries for one shot as points in time order, the first at the start of the shot.
+    Positions become percentages of the frame width; an entry that cannot be placed is left out."""
+    points: List[Dict[str, Any]] = []
+    notes: List[str] = []
     on = ""
     for e in entries if isinstance(entries, (list, tuple)) else []:
         try:
-            x = float(e.get("x"))
+            left, right = sorted(max(0.0, min(1000.0, float(e.get(k)))) for k in ("left", "right"))
         except (AttributeError, TypeError, ValueError):
+            notes.append("an entry without left / right was ignored")
             continue
         on = str(e.get("on") or "").strip() or on
-        points.append((max(0, min(100, int(round(x)))), on))
+        at = str(e.get("at") or "").strip()
+        t, move = _when(at, shot, sounds)
+        if t is None:
+            notes.append(f"an entry at {at!r} was ignored (not a sound over this shot, nor one of its marks)")
+            continue
+        points.append({"t": round(t, 3), "at": at, "move": move, "left": round(left / 10, 1),
+                       "right": round(right / 10, 1), "x": round((left + right) / 20, 1), "on": on})
     if not points:
-        return [(50, "")] * n, "no positions given: the middle of the frame is used"
-    if len(points) == n:
-        return points, ""
-    got = len(points)
-    stretched = [points[int(round(k * (got - 1) / (n - 1)))] if n > 1 else points[0] for k in range(n)]
-    return stretched, f"{got} positions for {n} moments: spread evenly over the shot"
+        return ([{"t": shot.start, "at": "", "move": "cut", "left": 35.0, "right": 65.0, "x": 50.0, "on": ""}],
+                ["no usable entry: the middle of the frame is used"])
+    points.sort(key=lambda p: p["t"])
+    points = [p for i, p in enumerate(points) if i + 1 == len(points) or points[i + 1]["t"] > p["t"]]   # last one wins
+    if points[0]["t"] > shot.start + 1e-6:      # nothing given for the start: open on the first thing named
+        points.insert(0, {**points[0], "t": shot.start, "at": ""})
+    points[0]["move"] = "cut"
+    return points, notes
+
+
+def _when(at: str, shot: VideoUnit, sounds: Dict[str, AudioUnit]) -> Tuple[Optional[float], str]:
+    """``(time, how the picture gets there)`` for an entry's ``at``; ``(None, "")`` if it cannot be placed."""
+    if not at:
+        return shot.start, "cut"
+    if at in sounds:                             # the focus changes as that sound starts
+        a = sounds[at]
+        return (max(a.start, shot.start), "cut") if a.end > shot.start and a.start < shot.end else (None, "")
+    try:                                         # one of the shot's marks: the subject has moved there
+        wanted = float(at.rstrip("s"))
+    except ValueError:
+        return None, ""
+    mark = min(shot.focus_times, key=lambda m: abs(m - wanted), default=None)
+    return (mark, "glide") if mark is not None and abs(mark - wanted) <= 0.6 else (None, "")
 
 
 # =========================================================================== storage
@@ -300,11 +334,9 @@ def report(result: Dict[str, Any]) -> str:
             lines.append(f"        objects: {'; '.join(d['objects'])}")
         if d["text"]:
             lines.append(f"        text: {'; '.join(d['text'])}")
-        marks, last = [], None
-        for t, x, on in zip(f["times"], f["x"], f["on"]):
-            marks.append(f"{t:.1f}s {x}%" + (f" [{on}]" if on and on != last else ""))
-            last = on
-        lines.append(f"        focus: {'  '.join(marks)}")
+        for p in f["points"]:
+            how = "glides to" if p["move"] == "glide" else ("from " + p["at"] if p["at"] else "opens on")
+            lines.append(f"        focus: {p['t']:6.2f}s {how:<10} {p['x']:.0f}% ({p['left']:.0f}-{p['right']:.0f})  {p['on']}")
     lines += ["", "AUDIO UNITS"]
     for a in audio:
         d = da[a.id]
