@@ -19,7 +19,7 @@ class Settings:
 
     # ---- analysis copy of the video
     proxy_height: int = 720
-    proxy_fps: float = 25.0
+    proxy_fps: Optional[float] = None      # None = the video's own frame rate, so shot times fall exactly on its frames
 
     # ---- shots (PySceneDetect)
     shot_threshold: float = 27.0
@@ -35,6 +35,10 @@ class Settings:
     gemini_fps: float = 4.0                # frames per second Gemini looks at (its own default is 1: too few for short shots)
     thinking: str = "default"              # "default" (the model decides) | "minimal" | "low" | "medium" | "high"
     agentic: bool = False                  # agentic video processing: no output schema, the answer is parsed from a JSON block
+
+    # ---- rendering
+    dead_zone: float = 3.0                 # a move of the focus line smaller than this (% of the width) is not followed
+    crf: int = 18                          # x264 quality of the rendered videos (lower = better, bigger)
 
     # ---- re-running
     refresh: bool = False                  # ask Gemini again even if an answer is stored

@@ -23,11 +23,23 @@ every piece of sound. Running it again reuses what is stored; `--refresh` asks G
 shots shorter than a second). `--thinking minimal|low|medium|high` sets how hard Gemini thinks before it answers (default: the model
 decides); use it with `--refresh` to compare levels on a video that is already analysed.
 
+## Render
+
+```bash
+python -m fovea render my_ad.mp4                      # 9:16, 1:1, 4:3 and 3:4
+python -m fovea render my_ad.mp4 --formats 9:16 4:5   # any WIDTH:HEIGHT
+```
+
+Each format is a crop of the full height that follows the focus line: it jumps where the line jumps
+and glides where it glides. Moves smaller than `--dead-zone` (3% of the width) are not followed. All
+formats come out of one ffmpeg run, in `fovea_data/<video name>/outputs/`. A video that has not been
+analysed yet is analysed first; a format as wide as the video or wider is skipped.
+
 ## What happens
 
 ```
 video ──┬── sound ── transcript (Whisper, word times) ──┐
-        └── proxy ── shots (PySceneDetect) ─────────────┴── base analysis (ONE Gemini call)
+        └── proxy ── shots (PySceneDetect) ─────────────┴── base analysis (ONE Gemini call) ── render
 ```
 
 The two branches run at the same time. Code then cuts the video into **video units** (one per shot)
@@ -50,7 +62,8 @@ fovea_data/<video name>/
 ├── input/                  a copy of the video
 ├── prep/                   proxy.mp4, audio.wav, shots.csv, units.json, log.json
 ├── audio/transcript.csv    one row per word, with its times
-└── framing/framing.json    per shot: where the picture is centred, over time
+├── framing/framing.json    per shot: where the picture is centred, over time
+└── outputs/                the rendered videos, one per format
 ```
 
 `log.json` holds the cast and the description of every unit. `framing.json` is separate, so framing
@@ -69,7 +82,8 @@ fovea/
 ├── transcript.py   Whisper -> transcript.csv
 ├── units.py        video units and audio units
 ├── analysis.py     the base analysis: prompt, checking the answer, storage
-├── framing.py      where the picture is centred at a given time
+├── framing.py      where the picture is centred at a given time; the path of a crop
+├── render.py       the video in other shapes (one ffmpeg run)
 ├── schema.py       the shape Gemini answers in
 └── gemini.py       one question to Gemini about one video
 tests/              python -m unittest discover -s tests

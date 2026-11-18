@@ -1,7 +1,7 @@
 """Run the steps for one video.
 
     video ──┬── sound ── transcript (Whisper) ──┐
-            └── proxy ── shots (PySceneDetect) ─┴── base analysis (one Gemini call)
+            └── proxy ── shots (PySceneDetect) ─┴── base analysis (one Gemini call) ── render
 
 The two branches run at the same time. A step whose output is already there is skipped.
 """
@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from . import analysis, media, shots, transcript
+from . import render as renderer
 from .config import Settings
 from .job import Job, read_json, write_json
 
@@ -31,17 +32,30 @@ def analyze(video: str | Path, settings: Optional[Settings] = None, api_key: Opt
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         words_job = pool.submit(_transcript, job, settings, info["has_audio"], log)
-        shots_job = pool.submit(_shots, job, settings, log)
+        shots_job = pool.submit(_shots, job, settings, info["fps"], log)
         words, shot_list = words_job.result(), shots_job.result()
 
     log("▶ base analysis (Gemini)")
     return {**analysis.run(job, shot_list, words, settings, api_key, log), "job": job}
 
 
-def _shots(job: Job, settings: Settings, log: Callable[[str], None]) -> List[Dict[str, Any]]:
+def render(video: str | Path, formats: Sequence[str] = renderer.DEFAULT_FORMATS, settings: Optional[Settings] = None,
+           api_key: Optional[str] = None, log: Callable[[str], None] = print) -> List[Path]:
+    """The video in other shapes, cropped along the focus line. Analyses the video first if needed."""
+    settings = settings or Settings()
+    for f in formats:
+        renderer.parse_format(f)                       # a typo should not cost an analysis
+    result = analyze(video, settings, api_key, log)
+    job = result["job"]
+    log(f"▶ render ({', '.join(formats)})")
+    return renderer.render(job, result["video"], result["framing"], read_json(job.video_info), formats,
+                           settings.dead_zone, settings.crf, log)
+
+
+def _shots(job: Job, settings: Settings, fps: float, log: Callable[[str], None]) -> List[Dict[str, Any]]:
     if settings.force or not job.shots_csv.exists():
         if settings.force or not job.proxy.exists():
-            media.make_proxy(job.source, job.proxy, settings.proxy_height, settings.proxy_fps)
+            media.make_proxy(job.source, job.proxy, settings.proxy_height, settings.proxy_fps or fps)
         shots.write_csv(job.shots_csv, shots.detect(job.proxy, settings.shot_threshold))
     found = shots.read_csv(job.shots_csv)
     log(f"  [shots] {len(found)} shots -> {job.shots_csv}")

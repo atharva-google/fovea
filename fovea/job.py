@@ -4,14 +4,14 @@
         job.json                 which file this folder belongs to (name + SHA-256)
         input/<video file>       a copy of the video
         prep/video_info.json     size, frame rate, length
-        prep/proxy.mp4           720p / 25 fps copy with sound: analysed, and shown to Gemini
+        prep/proxy.mp4           720p copy with sound: analysed, and shown to Gemini
         prep/audio.wav           16 kHz mono sound for the transcript
         prep/shots.csv           the shots
         prep/units.json          the video cut into video units (shots) and audio units
         prep/log.json            Gemini's description of the cast and of every unit
         audio/transcript.csv     one row per word, with its times
         framing/framing.json     where the picture is centred, per shot over time
-        outputs/                 final videos (later)
+        outputs/                 the rendered videos, one per format
 """
 
 from __future__ import annotations
@@ -90,6 +90,9 @@ class Job:
     def transcript_csv(self) -> Path: return self._file("audio/transcript.csv")
     @property
     def framing_json(self) -> Path: return self._file("framing/framing.json")
+
+    def output(self, name: str) -> Path:
+        return self._file(f"outputs/{name}")
 
 
 def read_json(path: str | Path) -> Any:

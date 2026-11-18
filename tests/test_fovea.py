@@ -11,10 +11,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fovea import analysis, gemini, media, transcript
-from fovea.framing import position_at
+from fovea import analysis, gemini, media, render, transcript
+from fovea.framing import crop_track, position_at
 from fovea.job import Job
-from fovea.units import build_audio_units, cut_units, slots
+from fovea.units import VideoUnit, build_audio_units, cut_units, slots
 
 SHOTS = [(0.0, 4.0), (4.0, 8.3), (8.3, 11.0)]
 WORDS = [{"word": w, "start_s": s, "end_s": e} for w, s, e in [
@@ -293,6 +293,78 @@ class MediaTest(unittest.TestCase):
             self.assertEqual((proxy["width"], proxy["height"], proxy["fps"], proxy["has_audio"]), (320, 180, 25.0, True))
             wav = media.extract_audio(src, Path(d, "audio.wav"))
             self.assertGreater(wav.stat().st_size, 2 * 16000 * 2 * 0.9)          # ~2 s of 16 kHz mono 16-bit
+
+
+class CropTrackTest(unittest.TestCase):
+    """A 1000 px wide video, cropped 400 px wide: the left edge can be anywhere from 0 to 600."""
+
+    def track(self, points, dead_zone=3.0, end=10.0):
+        return crop_track([{"start": 0.0, "end": end, "points": points}], 1000, 400, dead_zone)
+
+    def test_the_crop_is_centred_on_the_line_and_stays_inside_the_picture(self):
+        self.assertEqual(self.track([{"t": 0.0, "move": "cut", "x": 50}]), [(0.0, 10.0, 300.0, 300.0)])
+        self.assertEqual(self.track([{"t": 0.0, "move": "cut", "x": 5}])[0][2], 0.0)
+        self.assertEqual(self.track([{"t": 0.0, "move": "cut", "x": 95}])[0][2], 600.0)
+
+    def test_it_jumps_on_a_cut_and_moves_evenly_on_a_glide(self):
+        points = [{"t": 0.0, "move": "cut", "x": 30}, {"t": 4.0, "move": "cut", "x": 70},
+                  {"t": 6.0, "move": "glide", "x": 70}, {"t": 8.0, "move": "glide", "x": 50}]
+        self.assertEqual(self.track(points), [(0.0, 4.0, 100.0, 100.0), (4.0, 6.0, 500.0, 500.0),
+                                              (6.0, 8.0, 500.0, 300.0), (8.0, 10.0, 300.0, 300.0)])
+
+    def test_small_moves_are_not_followed_but_a_slow_drift_is(self):
+        twitch = [{"t": 0.0, "move": "cut", "x": 50}, {"t": 3.0, "move": "cut", "x": 52},
+                  {"t": 5.0, "move": "glide", "x": 49}]
+        self.assertEqual(self.track(twitch), [(0.0, 10.0, 300.0, 300.0)])
+        drift = [{"t": 0.0, "move": "cut", "x": 40}] + [{"t": float(t), "move": "glide", "x": 40 + 2 * t}
+                                                         for t in range(1, 6)]
+        self.assertEqual(self.track(drift), [(0.0, 2.0, 200.0, 240.0), (2.0, 4.0, 240.0, 280.0),
+                                             (4.0, 10.0, 280.0, 280.0)])
+
+    def test_shots_follow_each_other_without_a_gap(self):
+        shots = [{"start": 0.0, "end": 2.0, "points": [{"t": 0.0, "move": "cut", "x": 50}]},
+                 {"start": 2.0, "end": 5.0, "points": [{"t": 2.0, "move": "cut", "x": 50}]},
+                 {"start": 5.0, "end": 9.0, "points": [{"t": 5.0, "move": "cut", "x": 20}]}]
+        self.assertEqual(crop_track(shots, 1000, 400), [(0.0, 5.0, 300.0, 300.0), (5.0, 9.0, 0.0, 0.0)])
+
+    def test_formats(self):
+        self.assertEqual(render.parse_format("9:16"), ("9x16", 0.5625))
+        self.assertEqual(render.parse_format("4x5"), ("4x5", 0.8))
+        for bad in ("vertical", "9:0", "9"):
+            with self.assertRaises(ValueError):
+                render.parse_format(bad)
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg not installed")
+class RenderTest(unittest.TestCase):
+    def test_every_format_is_cropped_along_the_line_and_switches_on_the_right_frame(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d, "ad.mp4")                        # red | green | blue, 2 s at 25 fps, with sound
+            colours = [x for c, w in (("red", 214), ("green", 212), ("blue", 214))
+                       for x in ("-f", "lavfi", "-i", f"color={c}:s={w}x360:r=25:d=2")]
+            subprocess.run(["ffmpeg", "-y", "-v", "error", *colours, "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                            "-filter_complex", "[0][1][2]hstack=3", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                            "-c:a", "aac", str(src)], check=True)
+            job = Job.open(src, Path(d, "data"))
+            video = [VideoUnit("V01", 0.0, 1.0), VideoUnit("V02", 1.0, 2.0)]
+            framing = {"shots": [{"id": "V01", "points": [{"t": 0.0, "move": "cut", "x": 20}]},
+                                 {"id": "V02", "points": [{"t": 1.0, "move": "cut", "x": 80}]}]}
+            notes = []
+            files = render.render(job, video, framing, media.probe(src), ["9:16", "1:1", "16:9", "21:9"],
+                                  log=notes.append)
+            self.assertEqual([f.name for f in files], ["ad_9x16.mp4", "ad_1x1.mp4"])
+            self.assertEqual(sum("skipped" in n for n in notes), 2)                # nothing to crop for the wide ones
+            sizes = [media.probe(f) for f in files]
+            self.assertEqual([(i["width"], i["height"], i["has_audio"]) for i in sizes], [(202, 360, True), (360, 360, True)])
+            self.assertAlmostEqual(sizes[0]["duration"], 2.0, delta=0.1)
+
+            def colour(frame):                                                      # the average colour of one frame
+                raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(files[0]), "-vf",
+                                      f"select=eq(n\\,{frame}),scale=1:1", "-frames:v", "1", "-f", "rawvideo",
+                                      "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+                return "red" if raw[0] > raw[2] else "blue"
+
+            self.assertEqual([colour(n) for n in (0, 24, 25, 49)], ["red", "red", "blue", "blue"])
 
 
 if __name__ == "__main__":
