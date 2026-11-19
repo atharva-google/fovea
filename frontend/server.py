@@ -41,6 +41,12 @@ from fovea.job import Job, read_json, write_json  # noqa: E402
 from fovea.units import UNITS_VERSION, slots  # noqa: E402
 
 PORT = int(os.environ.get("FOVEA_PORT", "8765"))
+try:
+    import update as _update
+
+    VERSION = _update.version()
+except Exception:  # noqa: BLE001 - the version is only shown; never a reason not to start
+    VERSION = ""
 IDLE_MINUTES = float(os.environ.get("FOVEA_IDLE_MINUTES", "10"))     # until the user picks another in Settings
 DATA = Settings().data_dir
 LOCAL = Path(os.environ.get("FOVEA_LOCAL", HERE / ".local"))   # this computer's settings (the Gemini key); not in git
@@ -48,6 +54,7 @@ STATIC = {"/": "index.html", "/app.js": "app.js", "/style.css": "style.css", "/s
           "/icon.png": "icon.png"}
 
 JOBS: Dict[str, Dict[str, Any]] = {}         # project -> the job running (or last run) for it
+UPDATE: Dict[str, Any] = {"status": "idle", "lines": [], "error": ""}     # the Update button
 LOCK = threading.Lock()
 last_seen = time.time()                      # when the page last asked for anything
 
@@ -259,6 +266,30 @@ def run_edit(job: Job, seconds: float) -> Callable[[Callable[[str], None]], None
     return work
 
 
+def run_update(server: ThreadingHTTPServer) -> None:
+    """Get the latest Fovea; when something changed, start the new one and stop this one."""
+    import update
+
+    try:
+        changed = update.update(lambda message: UPDATE["lines"].append(str(message)))
+    except BaseException as e:  # noqa: BLE001
+        traceback.print_exc()
+        UPDATE.update(status="error", error=str(e) or type(e).__name__)
+        return
+    if not changed:
+        UPDATE["status"] = "current"
+        return
+    UPDATE["status"] = "restarting"
+    quiet = sys.stdout is None or not sys.stdout.isatty()       # started from an icon: nothing to print to
+    out = subprocess.DEVNULL if quiet else None
+    extra = ({"creationflags": 0x00000008 | 0x00000200} if os.name == "nt"      # detached, in its own group
+             else {"start_new_session": True})
+    subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "--no-browser", "--restart"],
+                     stdin=subprocess.DEVNULL, stdout=out, stderr=out, **extra)
+    time.sleep(1.5)                                             # let the page read "restarting"
+    server.shutdown()
+
+
 # =========================================================================== the server
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -318,6 +349,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(self.app_state())
         if (method, path) == ("POST", "/api/projects"):
             return self.upload(query.get("name", ""))
+        if (method, path) == ("GET", "/api/update"):
+            return self.send_json(UPDATE)
+        if (method, path) == ("POST", "/api/update"):
+            with LOCK:
+                if any(j["status"] == "running" for j in JOBS.values()):
+                    raise Problem(409, "Fovea is busy with a video; update when it has finished")
+                if UPDATE["status"] not in ("running", "restarting"):
+                    UPDATE.update(status="running", lines=[], error="")
+                    threading.Thread(target=run_update, args=(self.server,), daemon=True).start()
+            return self.send_json(UPDATE)
 
         m = re.fullmatch(r"/api/projects/([^/]+)(?:/(.+))?", path)
         if not m:
@@ -385,7 +426,7 @@ class Handler(BaseHTTPRequestHandler):
         settings = local_settings()
         return {"projects": [summary_of(Job(d)) for d in folders],
                 "settings": {"has_key": bool(gemini_key()), "thinking": settings["thinking"],
-                             "idle_minutes": settings["idle_minutes"],
+                             "idle_minutes": settings["idle_minutes"], "version": VERSION,
                              "thinking_levels": list(THINKING_LEVELS)}}
 
     def upload(self, name: str) -> None:
@@ -513,7 +554,7 @@ def sleep_when_idle(server: ThreadingHTTPServer) -> None:
     """Stop when the page has not asked for anything for a while, unless a job is running."""
     while True:
         time.sleep(5)
-        busy = any(j["status"] == "running" for j in list(JOBS.values()))
+        busy = any(j["status"] == "running" for j in list(JOBS.values())) or UPDATE["status"] == "running"
         if busy:
             global last_seen
             last_seen = time.time()
@@ -526,9 +567,16 @@ def sleep_when_idle(server: ThreadingHTTPServer) -> None:
 def main() -> None:
     url = f"http://127.0.0.1:{PORT}/"
     show = "--no-browser" not in sys.argv
-    try:
-        server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    except OSError:
+    wait_until = time.time() + (30 if "--restart" in sys.argv else 0)     # after an update: the old one is leaving
+    server = None
+    while server is None:
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+        except OSError:
+            if time.time() > wait_until:
+                break
+            time.sleep(0.3)
+    if server is None:
         try:                                         # is that Fovea, already awake?
             with urllib.request.urlopen(f"{url}api/ping", timeout=3) as r:
                 awake = json.load(r).get("fovea")

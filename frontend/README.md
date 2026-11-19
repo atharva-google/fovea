@@ -12,7 +12,8 @@ ffmpeg and speech model (about 1.2 GB, a few minutes), puts a Fovea icon on the 
 - **Windows:** `install/Install Fovea.bat`
 
 Everything goes into one folder (`~/Fovea`, or `%LOCALAPPDATA%\Fovea` on Windows). Running the setup file
-again updates Fovea and keeps your projects and key. To remove Fovea, delete that folder and the icon.
+again also updates Fovea, but the **Update Fovea** button under Settings does it for you; both keep
+your projects and key. To remove Fovea, delete that folder and the icon.
 
 ## Run from the code (for development)
 
@@ -35,6 +36,7 @@ frontend/
 ├── server.py     the local server: serves the page, runs the steps (standard library only)
 ├── launch.py     what the Fovea icon runs: finds the bundled ffmpeg, then starts the server
 ├── install/      the setup files
+├── update.py     what the Update button does (Settings)
 ├── index.html    the page
 ├── style.css     the dark theme
 ├── app.js        what the page does

@@ -16,7 +16,7 @@ const S = {
   tab: "shots", shot: null,   // right panel; the shot under the playhead
   edit: null, wantEdit: null, // the edit shown in the Edit tab
   mode: "original", segs: null, // what Play plays: everything, or only some stretches
-  allFormats: false, drag: null, poll: null, dismissed: null, asleep: false,
+  allFormats: false, drag: null, poll: null, dismissed: null, asleep: false, updating: false,
   videoFor: null, videoKind: null, // which project's video is loaded: "source", "proxy" or "failed"
   seeking: false,
 };
@@ -50,7 +50,7 @@ function toast(message) {
 // The server stops when the page is closed or idle. While it is gone, show the sleep screen and keep
 // knocking; when it answers again, carry on.
 function setAsleep(on) {
-  if (on === S.asleep) return;
+  if (on === S.asleep || (on && S.updating)) return;   // during an update the server is meant to go away
   S.asleep = on;
   $("#asleep").hidden = !on;
   clearInterval(setAsleep.timer);
@@ -456,7 +456,7 @@ crop.addEventListener("pointerup", async () => {
 crop.addEventListener("pointercancel", () => { S.drag = null; });
 
 // =========================================================================== jobs (log, render, edit)
-const KINDS = { log: "Watching the video", render: "Making the videos", edit: "Making the shorter version", upload: "Adding the video" };
+const KINDS = { update: "Updating Fovea", log: "Watching the video", render: "Making the videos", edit: "Making the shorter version", upload: "Adding the video" };
 
 function showProgress(job) {
   const el = $("#progress");
@@ -574,6 +574,7 @@ function openSettings() {
   $("#thinking").innerHTML = (S.settings.thinking_levels || []).map((level) =>
     `<option ${level === S.settings.thinking ? "selected" : ""}>${esc(level)}</option>`).join("");
   $("#idle").value = Math.round(S.settings.idle_minutes || 10);
+  $("#version").textContent = S.settings.version ? `version ${S.settings.version}` : "";
   $("#settings").returnValue = "";
   $("#settings").showModal();
 }
@@ -730,12 +731,49 @@ $("#progress").onclick = (e) => {
 };
 
 $("#settingsBtn").onclick = openSettings;
+// Update: the server fetches the latest Fovea and starts again; the page waits for it and reloads.
+async function updateFovea() {
+  const show = (state) => showProgress({ kind: "update", status: "running", lines: state.lines || [] });
+  const ask = async (method) => {
+    const res = await fetch("/api/update", { method, headers: { "X-Fovea": "1" } });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    return data;
+  };
+  let state;
+  try {
+    state = await ask("POST");
+  } catch (e) {
+    return toast(e.message);
+  }
+  S.updating = true;                       // the server going away is expected: no sleep screen
+  for (let gone = 0; gone < 120;) {
+    show(state);
+    if (state.status === "current" || state.status === "error") break;
+    await sleep(1000);
+    try {
+      const now = await ask("GET");
+      if (state.status === "restarting" && now.status === "idle") return location.reload();   // the new one answered
+      state = now;
+    } catch (e) {
+      state = { status: "restarting", lines: [...(state.lines || []), "Starting the new version ..."].slice(-6) };
+      gone += 1;
+    }
+  }
+  S.updating = false;
+  showProgress(null);
+  if (state.status === "current") return toast("Fovea is already up to date");
+  return toast(state.status === "error" ? `The update did not work: ${state.error}`
+    : "Fovea did not come back. Click the Fovea icon to start it.");
+}
+
 $("#settings").addEventListener("close", () => {
-  if ($("#settings").returnValue !== "save") return;
+  if ($("#settings").returnValue === "update") return updateFovea();
+  if ($("#settings").returnValue !== "save") return undefined;
   const body = { thinking: $("#thinking").value };
   if (parseFloat($("#idle").value) >= 1) body.idle_minutes = parseFloat($("#idle").value);
   if ($("#key").value.trim()) body.gemini_key = $("#key").value.trim();
-  saveSettings(body);
+  return saveSettings(body);
 });
 
 document.addEventListener("keydown", (e) => {
