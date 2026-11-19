@@ -1,7 +1,8 @@
 """Run the steps for one video.
 
     video ──┬── sound ── transcript (Whisper) ──┐
-            └── proxy ── shots (PySceneDetect) ─┴── base analysis (one Gemini call) ── render
+            └── proxy ── shots (PySceneDetect) ─┴── log (one Gemini call) ──┬── render
+                                                                              └── edit (one Gemini call, text only) ── render
 
 The two branches run at the same time. A step whose output is already there is skipped.
 """
@@ -12,7 +13,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+import dataclasses
+
 from . import analysis, media, shots, transcript
+from . import edit as editor
 from . import render as renderer
 from .config import Settings
 from .job import Job, read_json, write_json
@@ -35,7 +39,7 @@ def analyze(video: str | Path, settings: Optional[Settings] = None, api_key: Opt
         shots_job = pool.submit(_shots, job, settings, info["fps"], log)
         words, shot_list = words_job.result(), shots_job.result()
 
-    log("▶ base analysis (Gemini)")
+    log("▶ log (Gemini watches the video)")
     return {**analysis.run(job, shot_list, words, settings, api_key, log), "job": job}
 
 
@@ -50,6 +54,27 @@ def render(video: str | Path, formats: Sequence[str] = renderer.DEFAULT_FORMATS,
     log(f"▶ render ({', '.join(formats)})")
     return renderer.render(job, result["video"], result["framing"], read_json(job.video_info), formats,
                            settings.dead_zone, settings.crf, log)
+
+
+def edit(video: str | Path, seconds: float, formats: Sequence[str] = renderer.DEFAULT_FORMATS,
+         settings: Optional[Settings] = None, api_key: Optional[str] = None,
+         log: Callable[[str], None] = print) -> Dict[str, Any]:
+    """A shorter version of about ``seconds``, chosen by Gemini from the log and rendered in the video's
+    own shape and in every format. Returns the log result plus ``"edit"`` and ``"files"``."""
+    settings = settings or Settings()
+    for f in formats:
+        renderer.parse_format(f)
+    # --refresh here means "ask for the EDIT again", not for the log
+    result = analyze(video, dataclasses.replace(settings, refresh=False), api_key, log)
+    job = result["job"]
+    log(f"▶ edit (synced, about {seconds:g}s)")
+    chosen = editor.run(job, result["audio"], result["video"], result["log"], seconds, settings, api_key,
+                        reuse=result["cached"], log=log)
+    log("▶ render")
+    files = renderer.render(job, result["video"], result["framing"], read_json(job.video_info), formats,
+                            settings.dead_zone, settings.crf, log, segments=chosen["segments"],
+                            tag=f"_{editor.name(seconds)}")
+    return {**result, "edit": chosen, "files": files}
 
 
 def _shots(job: Job, settings: Settings, fps: float, log: Callable[[str], None]) -> List[Dict[str, Any]]:

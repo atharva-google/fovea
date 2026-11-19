@@ -1,9 +1,10 @@
 """Command line.
 
-    python -m fovea analyze my_ad.mp4            # shots + transcript + base analysis (one Gemini call)
-    python -m fovea analyze my_ad.mp4 --refresh  # ask Gemini again
+    python -m fovea log my_ad.mp4                # shots + transcript + the log (one Gemini call)
+    python -m fovea log my_ad.mp4 --refresh      # ask Gemini again
     python -m fovea render my_ad.mp4             # the video as 9:16, 1:1, 4:3 and 3:4 (analyses it first if needed)
     python -m fovea render my_ad.mp4 --formats 9:16 4:5
+    python -m fovea edit my_ad.mp4 --seconds 15  # a shorter version of about 15 s, in every format
 """
 
 from __future__ import annotations
@@ -36,16 +37,22 @@ def main(argv=None) -> None:
     common.add_argument("--refresh", action="store_true", help="Ask Gemini again even if an answer is stored")
     common.add_argument("--force", action="store_true", help="Redo every step")
 
-    sub.add_parser("analyze", parents=[common], help="Shots, transcript and the base analysis; prints the result")
-    r = sub.add_parser("render", parents=[common], help="The video in other shapes, cropped along the focus line")
-    r.add_argument("--formats", nargs="+", default=list(DEFAULT_FORMATS), metavar="W:H",
-                   help="Shapes to render (default: %(default)s)")
-    r.add_argument("--dead-zone", type=float, default=d.dead_zone,
-                   help="Moves of the focus line smaller than this, in %% of the width, are not followed "
-                        "(default: %(default)g)")
+    shapes = argparse.ArgumentParser(add_help=False)
+    shapes.add_argument("--formats", nargs="*", default=list(DEFAULT_FORMATS), metavar="W:H",
+                        help="Shapes to render (default: %(default)s)")
+    shapes.add_argument("--dead-zone", type=float, default=d.dead_zone,
+                        help="Moves of the focus line smaller than this, in %% of the width, are not followed "
+                             "(default: %(default)g)")
+
+    sub.add_parser("log", aliases=["analyze"], parents=[common],
+                   help="Shots, transcript and the log (Gemini watches the video); prints the result")
+    sub.add_parser("render", parents=[common, shapes], help="The video in other shapes, cropped along the focus line")
+    e = sub.add_parser("edit", parents=[common, shapes],
+                       help="A shorter version, chosen by Gemini from the log and rendered in every shape")
+    e.add_argument("--seconds", type=float, required=True, help="About how long the short version should be")
     args = parser.parse_args(argv)
 
-    from . import analysis, gemini, pipeline
+    from . import analysis, edit, gemini, pipeline
 
     settings = Settings(gemini_model=args.gemini_model, gemini_fps=args.gemini_fps, thinking=args.thinking,
                         agentic=args.agentic, whisper_model=args.whisper_model, whisper_device=args.whisper_device,
@@ -53,10 +60,14 @@ def main(argv=None) -> None:
                         dead_zone=getattr(args, "dead_zone", d.dead_zone))
     key = args.gemini_key or os.environ.get("GEMINI_API_KEY")
     try:
-        if args.command == "analyze":
+        if args.command in ("log", "analyze"):
             result = pipeline.analyze(args.video, settings, key)
             print()
             print(analysis.report(result))
+        elif args.command == "edit":
+            result = pipeline.edit(args.video, args.seconds, args.formats, settings, key)
+            print()
+            print(edit.report(result["edit"], result["audio"], result["log"]))
         else:
             pipeline.render(args.video, args.formats, settings, key)
     except (FileNotFoundError, ValueError, analysis.KeyRequired, gemini.GeminiError) as e:

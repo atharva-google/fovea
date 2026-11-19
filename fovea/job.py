@@ -11,6 +11,7 @@
         prep/log.json            Gemini's description of the cast and of every unit
         audio/transcript.csv     one row per word, with its times
         framing/framing.json     where the picture is centred, per shot over time
+        edit/edit_synced_15s.json  a shorter version: which units are kept
         outputs/                 the rendered videos, one per format
 """
 
@@ -90,6 +91,9 @@ class Job:
     def transcript_csv(self) -> Path: return self._file("audio/transcript.csv")
     @property
     def framing_json(self) -> Path: return self._file("framing/framing.json")
+
+    def edit_json(self, name: str) -> Path:
+        return self._file(f"edit/edit_{name}.json")
 
     def output(self, name: str) -> Path:
         return self._file(f"outputs/{name}")

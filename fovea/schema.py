@@ -1,5 +1,5 @@
-"""The shape Gemini answers in for the base analysis, and THE place where every field is explained:
-the prompt (analysis.py) only gives the task and the rules that span units.
+"""The shapes Gemini answers in (the log, then the edit), and THE place where every field is explained:
+the prompts (analysis.py, edit.py) only give the task and the rules that span units.
 
 Fields are in the order Gemini should fill them in: what it sees and hears first, conclusions after.
 """
@@ -87,6 +87,26 @@ class Analysis(BaseModel):
                                                "however clearly they are seen. The same person is ONE entry however "
                                                "often they appear.")
     video_units: List[VideoUnit] = Field(description="Every video unit, in the order listed.")
+
+
+# =========================================================================== the edit
+class Reason(BaseModel):
+    id: str = Field(description="An audio unit id exactly as listed, e.g. A12.")
+    why: str = Field(description="A few words: what the story loses without it.")
+
+
+class Kept(BaseModel):
+    id: str = Field(description="An audio unit id exactly as listed, e.g. A12.")
+    seconds: float = Field(description="Its length, copied exactly as listed, e.g. 1.72. Add these up as you go.")
+
+
+class Edit(BaseModel):
+    story: str = Field(description="One sentence: what the short version must still tell, from setup to payoff.")
+    must_keep: List[Reason] = Field(description="The few units the story cannot lose: the setup, the payoff, and "
+                                                "where the product or brand is seen or named. Decide these before "
+                                                "anything else.")
+    keep: List[Kept] = Field(description="Every unit of the short version, in the order listed: everything in "
+                                         "must_keep, plus what makes it play smoothly.")
 
 
 def outline(model: type = Analysis, indent: int = 0) -> str:

@@ -1,4 +1,4 @@
-"""The base analysis: ONE Gemini call that watches the video and returns, in one answer,
+"""The log (the base analysis): ONE Gemini call that watches the video and returns, in one answer,
 
   * the cast
   * for every video unit (shot): what is seen, who is in it, the setting, objects, on-screen text

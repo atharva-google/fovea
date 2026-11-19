@@ -1,20 +1,22 @@
 """Render the video in other shapes: a crop of the full height that moves left and right along the
 stored focus line (framing/framing.json). All shapes are made in ONE ffmpeg run, from the original
-file, with the sound untouched in length.
+file. Given an edit, only the kept parts are rendered, back to back.
 
     outputs/<video name>_9x16.mp4, _1x1.mp4, ...
+    outputs/<video name>_synced_15s.mp4, _synced_15s_9x16.mp4, ...
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .framing import crop_track
 from .job import Job
 from .media import _run
 
 DEFAULT_FORMATS = ("9:16", "1:1", "4:3", "3:4")
+Span = Tuple[float, float]
 
 
 def parse_format(text: str) -> Tuple[str, float]:
@@ -30,32 +32,48 @@ def parse_format(text: str) -> Tuple[str, float]:
 
 def render(job: Job, video_units: Sequence[Any], framing: Dict[str, Any], info: Dict[str, Any],
            formats: Sequence[str] = DEFAULT_FORMATS, dead_zone: float = 3.0, crf: int = 18,
-           log: Callable[[str], None] = print) -> List[Path]:
-    """One file per format that is narrower than the video. Returns the files written."""
-    width, height = int(info["width"]), int(info["height"]) // 2 * 2
+           log: Callable[[str], None] = print, segments: Optional[Sequence[Span]] = None, tag: str = "") -> List[Path]:
+    """One file per format that is narrower than the video. Returns the files written.
+
+    ``segments`` = ``[(start_s, end_s)]``: only these parts of the video, back to back (an edit). The
+    edit is then also written in the video's own shape. ``tag`` goes into the file names."""
+    width, height, fps = int(info["width"]), int(info["height"]) // 2 * 2, float(info["fps"])
     points = {s["id"]: s["points"] for s in framing["shots"]}
     shots = [{"start": v.start, "end": v.end, "points": points[v.id]} for v in video_units]
+    stem = f"{job.source.stem}{tag}"
 
-    jobs: List[Tuple[Path, int, str]] = []                    # (file, crop width, where its left edge is)
+    jobs: List[Tuple[Path, int, str]] = []                    # (file, width, the crop filter or "")
+    if segments:
+        jobs.append((job.output(f"{stem}.mp4"), width, ""))
     for name, ratio in dict(parse_format(f) for f in formats).items():
         crop_w = int(round(height * ratio)) // 2 * 2
         if crop_w > width - 2:
             log(f"  {name}: as wide as the video or wider, so there is nothing to crop; skipped")
             continue
-        track = crop_track(shots, width, crop_w, dead_zone)
-        jobs.append((job.output(f"{job.source.stem}_{name}.mp4"), crop_w, _expression(track, float(info["fps"]))))
+        x = _expression(crop_track(shots, width, crop_w, dead_zone), fps)
+        jobs.append((job.output(f"{stem}_{name}.mp4"), crop_w, f"crop=w={crop_w}:h={height}:x='{x}':y=0"))
     if not jobs:
         return []
 
-    graph = [f"[0:v]split={len(jobs)}" + "".join(f"[s{i}]" for i in range(len(jobs)))]
-    graph += [f"[s{i}]crop=w={crop_w}:h={height}:x='{x}':y=0[o{i}]" for i, (_, crop_w, x) in enumerate(jobs)]
+    n = len(jobs)
+    spans = [(round(a * fps) / fps, round(b * fps) / fps) for a, b in segments or []]     # on whole frames
+    pick = ("select='" + "+".join(f"gte(t,{a - 0.5 / fps:.4f})*lt(t,{b - 0.5 / fps:.4f})" for a, b in spans)
+            + "',setpts=N/FRAME_RATE/TB") if spans else ""
+    graph = [f"[0:v]split={n}" + "".join(f"[s{i}]" for i in range(n))]
+    graph += [f"[s{i}]{','.join(f for f in (crop, pick) if f) or 'null'}[o{i}]" for i, (_, _, crop) in enumerate(jobs)]
+    sound = ["0:a?"] * n
+    if spans and info.get("has_audio"):
+        graph += [f"[0:a]atrim=start={a:.4f}:end={b:.4f},asetpts=PTS-STARTPTS[t{k}]" for k, (a, b) in enumerate(spans)]
+        graph.append("".join(f"[t{k}]" for k in range(len(spans))) + f"concat=n={len(spans)}:v=0:a=1,asplit={n}"
+                     + "".join(f"[a{i}]" for i in range(n)))
+        sound = [f"[a{i}]" for i in range(n)]
     cmd = ["ffmpeg", "-y", "-v", "error", "-i", str(job.source), "-filter_complex", ";".join(graph)]
     for i, (path, _, _) in enumerate(jobs):
-        cmd += ["-map", f"[o{i}]", "-map", "0:a?", "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
+        cmd += ["-map", f"[o{i}]", "-map", sound[i], "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
                 "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(path)]
     _run(cmd)
-    for path, crop_w, _ in jobs:
-        log(f"  {crop_w}x{height} -> {path}")
+    for path, w, _ in jobs:
+        log(f"  {w}x{height} -> {path}")
     return [path for path, _, _ in jobs]
 
 

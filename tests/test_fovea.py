@@ -1,5 +1,5 @@
-"""Units, the base analysis (prompt, checking the answer, storage), the transcript check and the job
-folder. No video model, Gemini or third-party package is needed; ffmpeg is used when installed.
+"""Units, the log and the edit (prompt, checking the answer, storage), rendering, the transcript check
+and the job folder. No video model, Gemini or third-party package is needed; ffmpeg is used when installed.
 
     python -m unittest discover -s tests -v
 """
@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fovea import analysis, gemini, media, render, transcript
+from fovea import analysis, edit, gemini, media, render, transcript
 from fovea.framing import crop_track, position_at
 from fovea.job import Job
 from fovea.units import VideoUnit, build_audio_units, cut_units, slots
@@ -257,6 +257,89 @@ class AnalysisTest(unittest.TestCase):
                 analysis.run(job, [], [], analysis.Settings(), api_key=None, log=lambda m: None)
 
 
+class EditTest(unittest.TestCase):
+    def setUp(self):
+        self.audio, self.video = cut_units(SHOTS, WORDS)
+        self.log = analysis.clean(answer(self.audio, self.video), self.audio, self.video)[0]
+
+    def raw(self, *ids, must=("A08",)):
+        dur = {a.id: round(a.dur, 2) for a in self.audio}
+        return {"story": "She gets a sweater.", "must_keep": [{"id": m, "why": "the payoff"} for m in must],
+                "keep": [{"id": i, "seconds": dur[i]} for i in ids]}
+
+    def test_the_prompt_is_the_log_with_lengths_and_no_times(self):
+        text = edit.build_prompt(self.audio, self.video, self.log, 6)
+        self.assertNotIn("{log}", text)
+        self.assertIn("Aim for about 6 seconds", text)
+        self.assertIn("  P1 (Mira): woman, about 30, red kurta", text)
+        self.assertIn("V02 | 4.30s | cast: P1 P2 | she opens it next to her father | needs: V01\n"
+                      "    A05 | 0.84s | other | (silence)", text)
+        self.assertIn("    A08 | 1.12s | dialogue_onscreen | P2: A sweater. | needs: A02", text)
+        self.assertIn("    A11 | 1.12s | dialogue_onscreen | P1: Thank you.\n"
+                      "V03 | 2.70s | cast: - | a red sweater in the box | text: For you | needs: A08\n"
+                      "    A11 | (continued)", text)
+
+    def test_kept_units_become_stretches_of_the_video_with_what_they_need(self):
+        got, issues = edit.clean(self.raw("A07", "A08", "A11"), self.audio, self.log)
+        self.assertEqual(got["keep"], ["A02", "A07", "A08", "A11"])               # A08 needs A02
+        self.assertEqual(got["segments"], [[0.94, 2.66], [5.24, 6.56], [7.84, 8.96]])
+        self.assertEqual(got["seconds"], 4.16)
+        self.assertEqual(got["must_keep"], [{"id": "A08", "why": "the payoff"}])
+        self.assertEqual(issues, ["A08 needs A02: added"])
+
+    def test_a_shot_whose_setup_is_not_kept_is_reported(self):
+        log = {**self.log, "audio_units": [{**u, "needs": []} for u in self.log["audio_units"]]}
+        got, issues = edit.clean(self.raw("A08"), self.audio, log)                 # V02 needs V01: nothing of it kept
+        self.assertEqual(got["keep"], ["A08"])
+        self.assertEqual(issues, ["V02 needs V01, of which nothing is kept"])
+
+    def test_wrong_ids_lengths_order_and_forgotten_essentials_are_fixed_and_reported(self):
+        raw = self.raw("A11", "A02", must=("A08", "A99"))
+        raw["keep"] += [{"id": "A11b", "seconds": 1.12}, {"id": "V02", "seconds": 4.3}, {"id": "A06", "seconds": 2.0},
+                        {"id": "A07", "seconds": 0.2}]
+        got, issues = edit.clean(raw, self.audio, self.log)
+        self.assertEqual(got["keep"], ["A02", "A06", "A07", "A08", "A11"])
+        self.assertEqual(got["segments"], [[0.94, 2.66], [4.84, 6.56], [7.84, 8.96]])
+        for word in ("'V02'", "'A99'", "A06 was taken to be 2s but is 0.40s", "original order",
+                     "A08 is in must_keep but was not kept"):
+            self.assertTrue(any(word in i for i in issues), word)
+        self.assertEqual(len(issues), 5)
+        flash = edit.clean(self.raw("A07", must=()), self.audio, self.log)[1]
+        self.assertTrue(any("flash" in i for i in flash))
+
+    def test_an_edit_is_stored_per_length_and_made_again_when_the_log_is_new(self):
+        asked = []
+
+        def fake(prompt, *a, **k):
+            asked.append(prompt)
+            return self.raw("A02", "A08"), 1.0
+
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d, "ad.mp4")
+            src.write_bytes(b"v")
+            job = Job.open(src, Path(d, "data"))
+            args = (job, self.audio, self.video, self.log)
+            with self.assertRaises(analysis.KeyRequired):
+                edit.run(*args, 6, analysis.Settings(), None, log=lambda m: None)
+            real, gemini.ask = gemini.ask, fake
+            try:
+                first = edit.run(*args, 6, analysis.Settings(), "key", log=lambda m: None)
+                self.assertEqual(edit.run(*args, 6, analysis.Settings(), None, log=lambda m: None), first)
+                edit.run(*args, 10, analysis.Settings(), "key", log=lambda m: None)
+                edit.run(*args, 6, analysis.Settings(), "key", reuse=False, log=lambda m: None)
+            finally:
+                gemini.ask = real
+            self.assertEqual(len(asked), 3)
+            self.assertEqual(sorted(p.name for p in (job.root / "edit").iterdir()),
+                             ["edit_synced_10s.json", "edit_synced_6s.json"])
+            self.assertEqual((first["target"], first["seconds"], first["keep"]), (6, 2.84, ["A02", "A08"]))
+            text = edit.report(first, self.audio, self.log)
+            self.assertIn("EDIT (synced): 2.8s of 11.0s, aiming for about 6s", text)
+            self.assertIn("  ! A08    5.44-  6.56s  P2: A sweater.   <- the payoff", text)
+            self.assertIn("  + A02    0.94-  2.66s  P1: I hope it's shoes.", text)
+            self.assertIn("    A03    2.66-  3.33s  (silence)", text)
+
+
 class SmallPartsTest(unittest.TestCase):
     def test_json_is_found_in_a_plain_answer_and_in_a_block(self):
         self.assertEqual(gemini.extract_json('{"summary": "s"}'), {"summary": "s"})
@@ -365,6 +448,40 @@ class RenderTest(unittest.TestCase):
                 return "red" if raw[0] > raw[2] else "blue"
 
             self.assertEqual([colour(n) for n in (0, 24, 25, 49)], ["red", "red", "blue", "blue"])
+
+    def test_an_edit_keeps_only_its_stretches_in_the_video_s_shape_and_in_every_format(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d, "ad.mp4")
+            colours = [x for c, w in (("red", 214), ("green", 212), ("blue", 214))
+                       for x in ("-f", "lavfi", "-i", f"color={c}:s={w}x360:r=25:d=2")]
+            subprocess.run(["ffmpeg", "-y", "-v", "error", *colours, "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                            "-filter_complex", "[0][1][2]hstack=3", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                            "-c:a", "aac", str(src)], check=True)
+            job = Job.open(src, Path(d, "data"))
+            video = [VideoUnit("V01", 0.0, 1.0), VideoUnit("V02", 1.0, 2.0)]
+            framing = {"shots": [{"id": "V01", "points": [{"t": 0.0, "move": "cut", "x": 20}]},
+                                 {"id": "V02", "points": [{"t": 1.0, "move": "cut", "x": 80}]}]}
+            files = render.render(job, video, framing, media.probe(src), ["9:16"], log=lambda m: None,
+                                  segments=[(0.2, 0.6), (1.0, 1.6)], tag="_synced_1s")
+            self.assertEqual([f.name for f in files], ["ad_synced_1s.mp4", "ad_synced_1s_9x16.mp4"])
+            info = [media.probe(f) for f in files]
+            self.assertEqual([(i["width"], i["has_audio"]) for i in info], [(640, True), (202, True)])
+
+            def stream(path, kind, entry):
+                out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", kind, "-count_frames", "-show_entries",
+                                      f"stream={entry}", "-of", "csv=p=0", str(path)], capture_output=True, check=True)
+                return float(out.stdout.decode().strip().strip(","))
+
+            def colour(frame):
+                raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(files[1]), "-vf",
+                                      f"select=eq(n\\,{frame}),scale=1:1", "-frames:v", "1", "-f", "rawvideo",
+                                      "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+                return "red" if raw[0] > raw[2] else "blue"
+
+            for f in files:
+                self.assertEqual(stream(f, "v", "nb_read_frames"), 25)                 # 10 + 15 frames
+                self.assertAlmostEqual(stream(f, "a", "duration"), 1.0, delta=0.06)
+            self.assertEqual([colour(n) for n in (0, 9, 10, 24)], ["red", "red", "blue", "blue"])
 
 
 if __name__ == "__main__":
