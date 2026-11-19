@@ -49,17 +49,27 @@ LAUNCH
   <key>CFBundleName</key><string>Fovea</string>
   <key>CFBundleIdentifier</key><string>local.fovea.app</string>
   <key>CFBundleExecutable</key><string>Fovea</string>
+  <key>CFBundleIconFile</key><string>Fovea</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSUIElement</key><true/>
 </dict></plist>
 PLIST
+  (                                               # the icon picture; Fovea works without it
+    SET="$(mktemp -d)/Fovea.iconset"; mkdir -p "$SET" "$APP/Contents/Resources"
+    for size in 16 32 128 256; do
+      sips -z $size $size "$ROOT/app/frontend/icon.png" --out "$SET/icon_${size}x${size}.png"
+      sips -z $((size * 2)) $((size * 2)) "$ROOT/app/frontend/icon.png" --out "$SET/icon_${size}x${size}@2x.png"
+    done
+    iconutil -c icns "$SET" -o "$APP/Contents/Resources/Fovea.icns"
+  ) >/dev/null 2>&1 || true
+  touch "$APP"
   ln -sfn "$APP" "$HOME/Desktop/Fovea"
   echo "Fovea is in your Applications folder and on your Desktop."
 else
   ICON="$HOME/.local/share/applications/fovea.desktop"
   mkdir -p "$(dirname "$ICON")"
-  printf '[Desktop Entry]\nType=Application\nName=Fovea\nExec="%s" "%s"\nTerminal=false\n' \
-    "$ROOT/venv/bin/python" "$ROOT/app/frontend/launch.py" > "$ICON"
+  printf '[Desktop Entry]\nType=Application\nName=Fovea\nExec="%s" "%s"\nIcon=%s\nTerminal=false\n' \
+    "$ROOT/venv/bin/python" "$ROOT/app/frontend/launch.py" "$ROOT/app/frontend/icon.png" > "$ICON"
   chmod +x "$ICON"
   [ -d "$HOME/Desktop" ] && cp "$ICON" "$HOME/Desktop/fovea.desktop"
   echo "Fovea is in your applications menu."

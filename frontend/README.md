@@ -42,4 +42,6 @@ frontend/
 ```
 
 What the page adds to a project is stored next to it, in `fovea_data/<video name>/frontend.json`.
-The Gemini key is stored in `frontend/.local/` (not in git).
+The Gemini key is stored as plain text in `settings/settings.json` inside the Fovea folder when
+installed by the setup file, or in `frontend/.local/settings.json` when run from the code (not in git).
+It is never sent back to the page, and only ever goes to Gemini.

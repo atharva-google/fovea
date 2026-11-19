@@ -31,7 +31,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-from fovea import analysis, framing  # noqa: E402
+from fovea import analysis, framing, media  # noqa: E402
 from fovea import edit as editor  # noqa: E402
 from fovea import render as renderer  # noqa: E402
 from fovea.config import THINKING_LEVELS, Settings  # noqa: E402
@@ -42,7 +42,8 @@ PORT = int(os.environ.get("FOVEA_PORT", "8765"))
 IDLE_S = float(os.environ.get("FOVEA_IDLE_MINUTES", "10")) * 60
 DATA = Settings().data_dir
 LOCAL = Path(os.environ.get("FOVEA_LOCAL", HERE / ".local"))   # this computer's settings (the Gemini key); not in git
-STATIC = {"/": "index.html", "/app.js": "app.js", "/style.css": "style.css", "/sw.js": "sw.js"}
+STATIC = {"/": "index.html", "/app.js": "app.js", "/style.css": "style.css", "/sw.js": "sw.js",
+          "/icon.png": "icon.png"}
 
 JOBS: Dict[str, Dict[str, Any]] = {}         # project -> the job running (or last run) for it
 LOCK = threading.Lock()
@@ -126,7 +127,7 @@ def summary_of(job: Job) -> Dict[str, Any]:
 def describe(job: Job) -> Dict[str, Any]:
     """Everything the page shows about one project."""
     out = {**summary_of(job), "name": job.source.name, "state": page_state(job), "job": JOBS.get(job.root.name),
-           "has_video": (job.root / "prep" / "proxy.mp4").is_file(),
+           "has_video": job.source.is_file(), "has_proxy": (job.root / "prep" / "proxy.mp4").is_file(),
            "outputs": sorted(({"name": f.name, "size": f.stat().st_size, "time": f.stat().st_mtime}
                               for f in (job.root / "outputs").glob("*.mp4")), key=lambda f: -f["time"])
            if (job.root / "outputs").is_dir() else []}
@@ -184,18 +185,15 @@ def start(pid: str, kind: str, work: Callable[[Callable[[str], None]], None]) ->
     threading.Thread(target=run, daemon=True).start()
 
 
-def run_log(video: Path, refresh: bool, uploaded: bool) -> Callable[[Callable[[str], None]], None]:
+def run_log(job: Job, refresh: bool) -> Callable[[Callable[[str], None]], None]:
     def work(log: Callable[[str], None]) -> None:
         from fovea import pipeline
 
         try:
-            pipeline.analyze(video, Settings(thinking=local_settings()["thinking"], refresh=refresh), gemini_key(), log)
+            pipeline.analyze(job.source, Settings(thinking=local_settings()["thinking"], refresh=refresh),
+                             gemini_key(), log)
         except analysis.KeyRequired:
-            raise RuntimeError('Fovea needs a Gemini key to watch the video. Add one under Settings, '
-                               'then press "Watch this video".') from None
-        finally:
-            if uploaded:
-                video.unlink(missing_ok=True)
+            raise RuntimeError("Fovea needs a Gemini key to watch the video.") from None
     return work
 
 
@@ -312,8 +310,6 @@ class Handler(BaseHTTPRequestHandler):
         m = re.fullmatch(r"/api/projects/([^/]+)(?:/(.+))?", path)
         if not m:
             raise Problem(404, "Not found")
-        if method == "GET" and m[2] == "job" and m[1] in JOBS:      # a new video's job starts before its folder exists
-            return self.send_json(JOBS[m[1]])
         job, rest = project(m[1]), m[2] or ""
         pid = job.root.name
         if method == "GET" and rest == "":
@@ -327,7 +323,8 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and rest == "job":
             return self.send_json(JOBS.get(pid) or {"status": "none", "lines": [], "error": ""})
         if method == "GET" and rest == "video":
-            return self.send_file(job.root / "prep" / "proxy.mp4")
+            # the file itself, so it plays at once; the prepared copy when the browser cannot play that
+            return self.send_file(job.root / "prep" / "proxy.mp4" if "proxy" in query else job.source)
         if method == "GET" and (t := re.fullmatch(r"thumb/(V\d+)\.jpg", rest)):
             return self.send_file(self.thumb(job, t[1]))
         if method == "GET" and (o := re.fullmatch(r"outputs/([^/]+\.mp4)", rest)):
@@ -348,7 +345,7 @@ class Handler(BaseHTTPRequestHandler):
             write_json(job.root / "frontend.json", state)
             return self.send_json(describe(job))
         if method == "POST" and rest == "log":
-            start(pid, "log", run_log(job.source, bool(self.read_json().get("refresh")), uploaded=False))
+            start(pid, "log", run_log(job, bool(self.read_json().get("refresh"))))
             return self.send_json(describe(job))
         if method == "POST" and rest == "render":
             name = self.read_json().get("edit")
@@ -379,27 +376,37 @@ class Handler(BaseHTTPRequestHandler):
                              "thinking_levels": list(THINKING_LEVELS)}}
 
     def upload(self, name: str) -> None:
-        """A new project: the file is saved, then the log starts."""
+        """A new project. It exists (and its video plays) as soon as the file has arrived; Fovea starts
+        watching it at once when there is a Gemini key."""
         name = Path(name).name
         if not Path(name).stem or name.startswith("."):
             raise Problem(400, "The file needs a name")
         pid = Path(name).stem
         if JOBS.get(pid, {}).get("status") == "running":
             raise Problem(409, "A project with this name is still busy")
-        target = DATA / ".uploads" / name
-        target.parent.mkdir(parents=True, exist_ok=True)
+        arrived = DATA / ".uploads" / name
+        arrived.parent.mkdir(parents=True, exist_ok=True)
         left = int(self.headers.get("Content-Length") or 0)
-        with open(target, "wb") as f:
+        with open(arrived, "wb") as f:
             while left > 0:
                 block = self.rfile.read(min(left, 1 << 20))
                 if not block:
                     break
                 f.write(block)
                 left -= len(block)
-        if left or not target.stat().st_size:
-            target.unlink(missing_ok=True)
-            raise Problem(400, "The upload did not arrive completely")
-        start(pid, "log", run_log(target, refresh=False, uploaded=True))
+        try:
+            if left or not arrived.stat().st_size:
+                raise Problem(400, "The upload did not arrive completely")
+            job = Job.open(arrived, DATA)
+        finally:
+            arrived.unlink(missing_ok=True)
+        JOBS.pop(pid, None)
+        try:
+            write_json(job.video_info, media.probe(job.source))
+        except Exception as e:  # noqa: BLE001 - the page says why when the video is watched
+            print(f"Could not read {name}: {e}")
+        if gemini_key():
+            start(pid, "log", run_log(job, refresh=False))
         self.send_json({"id": pid})
 
     def keep(self, job: Job, name: str, keep: Any) -> None:
@@ -425,8 +432,9 @@ class Handler(BaseHTTPRequestHandler):
             if unit is None or shutil.which("ffmpeg") is None:
                 raise Problem(404, "No picture")
             path.parent.mkdir(exist_ok=True)
+            proxy = job.root / "prep" / "proxy.mp4"
             subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{(unit.start + unit.end) / 2:.3f}", "-i",
-                            str(job.root / "prep" / "proxy.mp4"), "-frames:v", "1", "-vf", "scale=240:-2", str(path)],
+                            str(proxy if proxy.is_file() else job.source), "-frames:v", "1", "-vf", "scale=240:-2", str(path)],
                            capture_output=True)
         return path
 

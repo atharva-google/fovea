@@ -54,6 +54,7 @@ try {
         $Link.Arguments = '"' + "$Root\app\frontend\launch.py" + '"'
         $Link.WorkingDirectory = $Root
         $Link.Description = 'Fovea'
+        $Link.IconLocation = "$Root\app\frontend\icon.ico"
         $Link.Save()
     }
     Write-Host 'Fovea is on your Desktop and in the Start menu.'

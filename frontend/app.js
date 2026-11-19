@@ -16,7 +16,9 @@ const S = {
   tab: "shots", shot: null,   // right panel; the shot under the playhead
   edit: null, wantEdit: null, // the edit shown in the Edit tab
   mode: "original", segs: null, // what Play plays: everything, or only some stretches
-  allFormats: false, drag: null, poll: null, videoFor: null, dismissed: null, asleep: false,
+  allFormats: false, drag: null, poll: null, dismissed: null, asleep: false,
+  videoFor: null, videoKind: null, // which project's video is loaded: "source", "proxy" or "failed"
+  seeking: false,
 };
 const video = $("#video"), frame = $("#frame"), crop = $("#crop");
 
@@ -88,13 +90,16 @@ async function openProject(pid) {
 
 function setProject(p) {
   S.p = p;
-  if (p && p.has_video && S.videoFor !== p.id) {
-    S.videoFor = p.id;
-    video.src = here("/video");
-  }
   if (!p || !p.has_video) {
-    S.videoFor = null;
+    S.videoFor = S.videoKind = null;
     video.removeAttribute("src");
+  } else if (S.videoFor !== p.id) {                  // the file itself: it plays as soon as it is added
+    S.videoFor = p.id;
+    S.videoKind = "source";
+    video.src = here("/video");
+  } else if (S.videoKind === "failed" && p.has_proxy) {
+    S.videoKind = "proxy";                           // the browser could not play the file: the prepared copy
+    video.src = here("/video?proxy=1");
   }
   if (p && p.ready) {
     const shown = p.state.formats.filter((f) => p.tracks[f]);
@@ -109,9 +114,25 @@ function setProject(p) {
   renderAll();
   watchJob();
 }
+video.addEventListener("error", () => {
+  if (!S.videoFor || S.videoKind !== "source") return;
+  if (S.p && S.p.has_proxy) {
+    S.videoKind = "proxy";
+    video.src = here("/video?proxy=1");
+  } else {
+    S.videoKind = "failed";
+    $("#noplay").hidden = false;
+  }
+});
+video.addEventListener("loadedmetadata", () => {
+  $("#noplay").hidden = true;
+  fit();
+});
 
 const currentEdit = () => (S.p && S.p.ready ? S.p.edits.find((e) => e.name === S.edit) : null) || null;
-const duration = () => S.p.shots[S.p.shots.length - 1].end;
+const isBusy = () => !!(S.p && S.p.job && S.p.job.status === "running");
+const duration = () => (S.p && S.p.ready ? S.p.shots[S.p.shots.length - 1].end
+  : (isFinite(video.duration) && video.duration) || (S.p && S.p.info && S.p.info.duration) || 0);
 const shotAt = (t) => S.p.shots.find((s) => t >= s.start && t < s.end) || S.p.shots[S.p.shots.length - 1];
 const movedTo = (shot) => {
   const focus = S.p.state.focus;
@@ -150,13 +171,15 @@ async function saveState(change) {
 function renderAll() {
   renderSidebar();
   renderTop();
-  const p = S.p, ready = !!(p && p.ready);
-  frame.hidden = !(p && p.has_video);
-  $("#empty").hidden = !frame.hidden;
-  $("#empty").innerHTML = !p
-    ? "<h2>Add a video to begin</h2><p>Fovea watches it once, then shows what each format keeps in the picture.</p>"
-    : "<h2>Getting this video ready</h2><p>The picture appears here in a moment.</p>";
+  const p = S.p, hasVideo = !!(p && p.has_video), ready = !!(p && p.ready);
+  $("#app").classList.toggle("ready", ready);
+  frame.hidden = !hasVideo;
+  $("#empty").hidden = hasVideo;
+  if (!hasVideo) $("#empty").innerHTML = welcomeHtml();
+  $("#noplay").hidden = S.videoKind !== "failed";
+  $("#player").hidden = !hasVideo;
   $("#controls").hidden = $("#timeline").hidden = $("#panel").hidden = !ready;
+  renderNotice();
   if (ready) {
     renderFormats();
     renderTimeline();
@@ -165,14 +188,59 @@ function renderAll() {
   fit();
 }
 
+// The first screen: what to do, in order. Shown while there is no video.
+function welcomeHtml() {
+  const key = S.settings.has_key;
+  return `<img class="logo" src="/icon.png" alt="">
+    <h1>Welcome to Fovea</h1>
+    <p>Turn one ad into every shape: vertical, square and more. Fovea watches your video once and keeps
+       the right part of the picture in view.</p>
+    <div class="steps">
+      <div class="step"><span class="num ${key ? "done" : ""}">${key ? "&#10003;" : "1"}</span><div style="flex:1">
+        <b>${key ? "Your Gemini key is saved" : "Paste your Gemini key"}</b>
+        ${key ? "Fovea uses it to watch your videos. You can change it under Settings."
+    : `Fovea uses Google's Gemini to watch your video.
+           <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Get a key here</a>, then paste it:
+           <div class="keyrow"><input id="firstKey" type="password" autocomplete="off" placeholder="your key">
+             <button class="btn" data-do="saveKey">Save</button></div>`}
+      </div></div>
+      <div class="step"><span class="num">2</span><div>
+        <b>Add a video</b>Choose a file, or drop one anywhere on this page. It stays on this computer.</div></div>
+    </div>
+    <button class="btn primary big" data-do="add">Add a video</button>`;
+}
+
+// Under the video, while it has not been watched yet: what is happening, or the one thing to do next.
+function renderNotice() {
+  const el = $("#notice"), p = S.p;
+  if (!p || p.ready) {
+    el.hidden = true;
+    return;
+  }
+  const failed = !!(p.job && p.job.status === "error");
+  el.hidden = false;
+  el.classList.toggle("bad", failed && S.settings.has_key);
+  if (isBusy()) {
+    el.innerHTML = '<span class="spinner"></span><span>Fovea is watching this video. It takes a few minutes; you can play it meanwhile.</span>';
+  } else if (!S.settings.has_key) {
+    el.innerHTML = '<span>Fovea needs your Gemini key before it can watch this video.</span>'
+      + '<button class="btn primary" data-do="key">Add your key</button>';
+  } else if (failed) {
+    el.innerHTML = `<span>That did not work. <span class="why">${esc(p.job.error)}</span></span>
+      <button class="btn primary" data-do="log">Try again</button>`;
+  } else {
+    el.innerHTML = '<span>Fovea has not watched this video yet.</span><button class="btn primary" data-do="log">Watch this video</button>';
+  }
+}
+
 function renderSidebar() {
   $("#projects").innerHTML = S.projects.map((p) => `
     <div class="project ${p.id === S.pid ? "on" : ""}" data-pid="${esc(p.id)}" title="${esc(p.id)}">
       <span class="dot ${p.busy ? "busy" : p.ready ? "ready" : ""}"></span>
       <span class="name">${esc(p.id)}</span>
       <span class="meta">${p.info ? clock(p.info.duration) : ""}</span>
-      <button class="icon remove" data-remove="${esc(p.id)}" title="Remove this project">&times;</button>
-    </div>`).join("");
+      <button class="icon remove" data-remove="${esc(p.id)}" title="Remove this video">&times;</button>
+    </div>`).join("") || '<div class="none">No videos yet.</div>';
 }
 
 function renderTop() {
@@ -181,13 +249,11 @@ function renderTop() {
     $("#top").innerHTML = '<span class="title">Fovea</span>';
     return;
   }
-  const busy = !!(p.job && p.job.status === "running");
   const meta = p.info ? `${p.info.width}×${p.info.height} · ${clock(p.info.duration)}${p.ready ? ` · ${p.shots.length} shots` : ""}` : "";
-  const off = busy ? "disabled" : "";
-  const buttons = p.ready
-    ? `<button class="btn ghost" data-do="relog" ${off} title="Ask Gemini to watch the video again">Watch again</button>
-       <button class="btn primary" data-do="render" ${off} title="Render every format, leaving out unchecked shots">Render</button>`
-    : `<button class="btn primary" data-do="log" ${off}>Watch this video</button>`;
+  const off = isBusy() ? "disabled" : "";
+  const buttons = !p.ready ? ""
+    : `<button class="btn ghost" data-do="relog" ${off} title="Ask Gemini to watch the video again">Watch again</button>
+       <button class="btn primary" data-do="render" ${off} title="Make a video in every format, leaving out unticked shots">Make the videos</button>`;
   $("#top").innerHTML = `<span class="title">${esc(p.name)}</span><span class="meta">${esc(meta)}</span>
     <span class="grow"></span>${buttons}`;
 }
@@ -230,7 +296,7 @@ function shotsHtml() {
     const moved = movedTo(s.id) != null
       ? `<span class="tag good">picture moved</span><button class="btn small" data-reset="${s.id}">reset</button>` : "";
     return `<div class="shot ${skipped ? "skipped" : ""} ${s.id === S.shot ? "now" : ""}" data-shot="${s.id}">
-      <input type="checkbox" data-skip="${s.id}" ${skipped ? "" : "checked"} title="Unchecked shots are left out of renders and edits">
+      <input type="checkbox" data-skip="${s.id}" ${skipped ? "" : "checked"} title="Unticked shots are left out of the videos Fovea makes">
       <img loading="lazy" alt="" src="${here(`/thumb/${s.id}.jpg`)}">
       <div class="body">
         <div class="head"><span class="mono">${s.id}</span><span class="tag">${clock(s.start)} · ${(s.end - s.start).toFixed(1)}s</span>
@@ -244,11 +310,10 @@ function shotsHtml() {
 }
 
 function editHtml() {
-  const p = S.p, edit = currentEdit();
-  const busy = !!(p.job && p.job.status === "running");
+  const p = S.p, edit = currentEdit(), busy = isBusy();
   let html = `<div class="line"><input id="seconds" type="number" min="3" max="600" value="${edit ? edit.target : 15}" style="width:72px">
-    seconds <button class="btn primary" data-do="edit" ${busy ? "disabled" : ""}>Make an edit</button></div>
-    <p class="hint">Gemini picks what to keep, from the checked shots only. Nothing is rendered until you ask.</p>`;
+    seconds <button class="btn primary" data-do="edit" ${busy ? "disabled" : ""}>Make a shorter version</button></div>
+    <p class="hint">Gemini picks what to keep, from the ticked shots only. No video is made until you ask.</p>`;
   if (p.edits.length) {
     html += `<div class="chips">${p.edits.map((e) => `<button class="chip ${e.name === S.edit ? "on" : ""}"
       data-edit="${esc(e.name)}">${e.target}s</button>`).join("")}</div>`;
@@ -259,7 +324,7 @@ function editHtml() {
   html += `<div class="note">${esc(edit.story)}</div>
     <div class="line"><span class="mono">${edit.seconds.toFixed(1)}s</span><span class="tag">aiming for about ${edit.target}s</span>
       <button class="btn small" data-do="preview">Preview</button>
-      <button class="btn primary small" data-do="renderEdit" ${busy || !edit.keep.length ? "disabled" : ""}>Render this edit</button></div>`;
+      <button class="btn primary small" data-do="renderEdit" ${busy || !edit.keep.length ? "disabled" : ""}>Make these videos</button></div>`;
   html += edit.issues.map((i) => `<div class="tag warn" style="padding:2px 4px">${esc(i)}</div>`).join("");
   html += '<div class="section">What is kept (tick to change)</div>';
   html += p.audio.map((a) => {
@@ -275,7 +340,7 @@ function editHtml() {
 
 function outputsHtml() {
   const p = S.p;
-  if (!p.outputs.length) return '<div class="note">Nothing rendered yet. Press Render, or render an edit from the Edit tab.</div>';
+  if (!p.outputs.length) return '<div class="note">No finished videos yet. Press "Make the videos" at the top, or make a shorter version first.</div>';
   return p.outputs.map((o) => {
     const url = here(`/outputs/${enc(o.name)}`);
     return `<div class="output"><span class="name" title="${esc(o.name)}">${esc(o.name)}</span>
@@ -284,26 +349,30 @@ function outputsHtml() {
   }).join("");
 }
 
-// The video is fitted into the space it has, keeping its shape; the crop window is drawn over it.
+// The video is fitted into the space it has, keeping its own shape; the crop window is drawn over it.
 function fit() {
   const p = S.p;
-  if (!p || !p.info || frame.hidden) return;
+  if (!p || frame.hidden) return;
+  const ratio = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight
+    : p.info ? p.info.width / p.info.height : 16 / 9;
   const stage = $("#stage"), w = stage.clientWidth - 32, h = stage.clientHeight - 32;
-  const ratio = p.info.width / p.info.height, width = Math.max(50, Math.min(w, h * ratio));
+  const width = Math.max(80, Math.floor(Math.min(w, h * ratio)));
   frame.style.width = `${width}px`;
-  frame.style.height = `${width / ratio}px`;
+  frame.style.height = `${Math.round(width / ratio)}px`;
 }
 new ResizeObserver(fit).observe($("#stage"));
 
 // =========================================================================== every frame
 function tick() {
   requestAnimationFrame(tick);
-  const p = S.p;
-  if (!p || !p.ready) {
-    crop.hidden = $("#dimLeft").hidden = $("#dimRight").hidden = true;
-    return;
+  const p = S.p, hide = (on) => { crop.hidden = $("#dimLeft").hidden = $("#dimRight").hidden = on; };
+  if (!p || !p.has_video) return hide(true);
+  const t = video.currentTime || 0, total = duration();
+  if (!S.seeking && total) $("#seek").value = Math.round(clamp(t / total, 0, 1) * 1000);
+  if (!p.ready) {
+    $("#clock").textContent = `${clock(t)} / ${clock(total)}`;
+    return hide(true);
   }
-  const t = video.currentTime || 0;
   if (S.segs && !video.paused && !S.drag && !S.segs.some(([a, b]) => t >= a - 0.02 && t < b)) {
     const next = S.segs.find(([a]) => a > t);         // not in a stretch that is played: jump on
     if (next) {
@@ -312,7 +381,7 @@ function tick() {
       video.pause();
       video.currentTime = S.segs[0][0];
     }
-    return;
+    return undefined;
   }
   const shot = shotAt(t);
   if (shot.id !== S.shot) {
@@ -322,13 +391,13 @@ function tick() {
     const card = document.querySelector(`.shot[data-shot="${shot.id}"]`);
     if (card && !video.paused) card.scrollIntoView({ block: "nearest" });
   }
-  $("#clock").textContent = `${clock(t)} / ${clock(duration())}   ${shot.id}`;
+  $("#clock").textContent = `${clock(t)} / ${clock(total)}   ${shot.id}`;
   const line = $("#timeline");
-  $("#playhead").style.left = `${16 + clamp(t / duration(), 0, 1) * (line.clientWidth - 32)}px`;
+  $("#playhead").style.left = `${16 + clamp(t / total, 0, 1) * (line.clientWidth - 32)}px`;
 
   const track = S.format ? p.tracks[S.format] : null;
-  crop.hidden = $("#dimLeft").hidden = $("#dimRight").hidden = !track;
-  if (!track) return;
+  hide(!track);
+  if (!track) return undefined;
   let left;
   if (S.drag) {
     left = S.drag.left;
@@ -341,6 +410,7 @@ function tick() {
   $("#dimLeft").style.width = `${left * 100}%`;
   $("#dimRight").style.width = `${Math.max(0, 1 - left - track.w) * 100}%`;
   crop.classList.toggle("moved", movedTo(shot.id) != null);
+  return undefined;
 }
 requestAnimationFrame(tick);
 
@@ -379,12 +449,13 @@ crop.addEventListener("pointerup", async () => {
 crop.addEventListener("pointercancel", () => { S.drag = null; });
 
 // =========================================================================== jobs (log, render, edit)
-const KINDS = { log: "Watching the video", render: "Rendering", edit: "Making the edit", upload: "Adding the video" };
+const KINDS = { log: "Watching the video", render: "Making the videos", edit: "Making the shorter version", upload: "Adding the video" };
 
 function showProgress(job) {
   const el = $("#progress");
   const key = job ? `${S.pid}:${job.kind}:${job.error}` : "";
-  if (!job || job.status === "done" || job.status === "none" || (job.status === "error" && S.dismissed === key)) {
+  const said = job && job.status === "error" && job.kind === "log" && S.p && !S.p.ready;   // the notice under the video says it
+  if (!job || job.status === "done" || job.status === "none" || said || (job.status === "error" && S.dismissed === key)) {
     el.hidden = true;
     return;
   }
@@ -438,28 +509,79 @@ $("#collapse").onclick = () => {
   localStorage.setItem("fovea.collapsed", on ? "1" : "");
   fit();
 };
-$("#new").onclick = () => $("#file").click();
-$("#file").onchange = async () => {
-  const file = $("#file").files[0];
-  $("#file").value = "";
+// Adding a video: from the button, the first screen, or by dropping a file on the page.
+async function addVideo(file) {
   if (!file) return;
+  const name = file.name.replace(/\.[^.]*$/, "");
+  if (S.projects.some((p) => p.id === name)
+      && !confirm(`You already have a video called "${name}". If this is a different file, it replaces that one. Continue?`)) return;
   showProgress({ kind: "upload", status: "running", lines: [file.name] });
   try {
     const made = await api(`/api/projects?name=${enc(file.name)}`, { method: "POST", body: file });
     S.pid = made.id;
-    for (let i = 0; i < 60; i++) {                 // the project appears once the file has been copied
-      try {
-        await openProject(made.id);
-        break;
-      } catch (e) {
-        await sleep(500);
-      }
-    }
+    S.videoFor = null;
     await refresh();
   } catch (e) {
-    showProgress(null);
     toast(e.message);
   }
+  if (!isBusy()) showProgress(null);
+}
+$("#new").onclick = () => $("#file").click();
+$("#file").onchange = () => {
+  const file = $("#file").files[0];
+  $("#file").value = "";
+  addVideo(file);
+};
+let dragDepth = 0;
+document.addEventListener("dragenter", (e) => {
+  if (![...(e.dataTransfer ? e.dataTransfer.types : [])].includes("Files")) return;
+  dragDepth += 1;
+  $("#drop").hidden = false;
+});
+document.addEventListener("dragleave", () => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (!dragDepth) $("#drop").hidden = true;
+});
+document.addEventListener("dragover", (e) => e.preventDefault());
+document.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dragDepth = 0;
+  $("#drop").hidden = true;
+  addVideo(e.dataTransfer && e.dataTransfer.files[0]);
+});
+
+async function saveSettings(body) {
+  try {
+    S.settings = (await post("/api/settings", body)).settings;
+  } catch (e) {
+    return toast(e.message);
+  }
+  if (S.settings.has_key && S.p && !S.p.ready && !isBusy()) return run("/log", {});   // it was waiting for the key
+  return renderAll();
+}
+function openSettings() {
+  $("#key").value = "";
+  $("#keyNote").innerHTML = (S.settings.has_key ? "A key is saved. " : "No key yet. ")
+    + 'It is kept in a file on this computer and only ever sent to Google\'s Gemini. '
+    + '<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Get a key</a>';
+  $("#thinking").innerHTML = (S.settings.thinking_levels || []).map((level) =>
+    `<option ${level === S.settings.thinking ? "selected" : ""}>${esc(level)}</option>`).join("");
+  $("#settings").returnValue = "";
+  $("#settings").showModal();
+}
+$("#empty").onclick = (e) => {
+  const what = (e.target.closest("[data-do]") || { dataset: {} }).dataset.do;
+  if (what === "add") $("#file").click();
+  if (what === "saveKey") {
+    const key = $("#firstKey").value.trim();
+    if (key) saveSettings({ gemini_key: key });
+    else toast("Paste your key first");
+  }
+};
+$("#notice").onclick = (e) => {
+  const what = (e.target.closest("[data-do]") || { dataset: {} }).dataset.do;
+  if (what === "key") openSettings();
+  if (what === "log") run("/log", {});
 };
 
 $("#projects").onclick = async (e) => {
@@ -482,7 +604,6 @@ $("#projects").onclick = async (e) => {
 
 $("#top").onclick = (e) => {
   const what = (e.target.closest("[data-do]") || { dataset: {} }).dataset.do;
-  if (what === "log") run("/log", {});
   if (what === "render") run("/render", {});
   if (what === "relog" && confirm("Ask Gemini to watch the video again? This replaces what it found and takes a few minutes.")) {
     run("/log", { refresh: true });
@@ -507,7 +628,7 @@ $("#formats").onclick = (e) => {
 $("#allFormats").onchange = (e) => { S.allFormats = e.target.checked; };
 $("#mode").onchange = (e) => {
   if (e.target.value === "edit" && !currentEdit()) {
-    toast("Make an edit first, in the Edit tab");
+    toast("Make a shorter version first, in the \"Shorter version\" tab");
     e.target.value = S.mode;
     return;
   }
@@ -518,6 +639,13 @@ $("#mode").onchange = (e) => {
 $("#play").onclick = () => (video.paused ? video.play() : video.pause());
 video.onplay = video.onpause = () => { $("#play").textContent = video.paused ? "Play" : "Pause"; };
 video.onclick = () => $("#play").click();
+$("#mute").onclick = () => {
+  video.muted = !video.muted;
+  $("#mute").textContent = video.muted ? "Sound off" : "Sound on";
+};
+$("#seek").addEventListener("pointerdown", () => { S.seeking = true; });
+$("#seek").addEventListener("input", () => { video.currentTime = ($("#seek").value / 1000) * duration(); });
+$("#seek").addEventListener("change", () => { S.seeking = false; });
 $("#timeline").onclick = (e) => {
   const box = $("#shotRow").getBoundingClientRect();
   video.currentTime = clamp((e.clientX - box.left) / box.width, 0, 1) * duration();
@@ -593,32 +721,20 @@ $("#progress").onclick = (e) => {
   $("#progress").hidden = true;
 };
 
-$("#settingsBtn").onclick = () => {
-  $("#key").value = "";
-  $("#keyNote").textContent = S.settings.has_key
-    ? "A key is saved on this computer." : "No key yet. Fovea needs one to watch a video and to make edits.";
-  $("#thinking").innerHTML = (S.settings.thinking_levels || []).map((level) =>
-    `<option ${level === S.settings.thinking ? "selected" : ""}>${esc(level)}</option>`).join("");
-  $("#settings").returnValue = "";
-  $("#settings").showModal();
-};
-$("#settings").addEventListener("close", async () => {
+$("#settingsBtn").onclick = openSettings;
+$("#settings").addEventListener("close", () => {
   if ($("#settings").returnValue !== "save") return;
   const body = { thinking: $("#thinking").value };
   if ($("#key").value.trim()) body.gemini_key = $("#key").value.trim();
-  try {
-    S.settings = (await post("/api/settings", body)).settings;
-  } catch (e) {
-    toast(e.message);
-  }
+  saveSettings(body);
 });
 
 document.addEventListener("keydown", (e) => {
-  if (!S.p || !S.p.ready || $("#settings").open || /INPUT|SELECT|TEXTAREA|BUTTON/.test(e.target.tagName)) return;
+  if (!S.p || !S.p.has_video || $("#settings").open || /INPUT|SELECT|TEXTAREA|BUTTON/.test(e.target.tagName)) return;
   if (e.code === "Space") {
     e.preventDefault();
     $("#play").click();
-  } else if (e.code === "ArrowRight" || e.code === "ArrowLeft") {
+  } else if (S.p.ready && (e.code === "ArrowRight" || e.code === "ArrowLeft")) {
     const shots = S.p.shots, i = shots.indexOf(shotAt(video.currentTime || 0));
     const to = shots[clamp(i + (e.code === "ArrowRight" ? 1 : -1), 0, shots.length - 1)];
     video.currentTime = to.start + 0.001;
