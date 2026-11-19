@@ -23,6 +23,9 @@ curl -LsSf "$REPO/archive/refs/heads/$BRANCH.tar.gz" | tar -xz -C "$TMP"
 rm -rf "$ROOT/app"
 mv "$TMP"/* "$ROOT/app"
 rm -rf "$TMP"
+# which version this is, so the Update button knows when there is a newer one
+(curl -fsSL "https://api.github.com/repos/atharva-google/fovea/commits/$BRANCH" | grep -m1 '"sha"' | cut -d'"' -f4 \
+  > "$ROOT/version") 2>/dev/null || rm -f "$ROOT/version"
 
 say "3/5  Python and the libraries (a few minutes the first time)"
 [ -d "$ROOT/venv" ] || "$UV" venv --python 3.12 "$ROOT/venv"

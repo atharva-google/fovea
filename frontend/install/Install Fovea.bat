@@ -36,6 +36,7 @@ try {
     if (Test-Path "$Root\app") { Remove-Item -Recurse -Force "$Root\app" }
     Move-Item (Get-ChildItem $Tmp | Select-Object -First 1).FullName "$Root\app"
     Remove-Item -Recurse -Force $Tmp, $Zip
+    try { (Invoke-RestMethod "https://api.github.com/repos/atharva-google/fovea/commits/$Branch" -Headers @{ 'User-Agent' = 'fovea-setup' }).sha | Set-Content "$Root\version" -NoNewline } catch { }
 
     Say '3/5  Python and the libraries (a few minutes the first time)'
     $Python = Join-Path $Root 'venv\Scripts\python.exe'
