@@ -32,13 +32,13 @@ if INSTALLED:                                                # keep what is your
     if "--prepare" not in sys.argv and (sys.stdout is None or not sys.stdout.isatty()):   # started from an icon: no window to print in
         sys.stdout = sys.stderr = open(HOME / "fovea.log", "a", buffering=1, encoding="utf-8")
 
-if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
-    try:                                                     # the copy of ffmpeg that came with the libraries
-        import static_ffmpeg
+if INSTALLED or not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+    try:                                                     # the copy of ffmpeg that comes with the libraries
+        import static_ffmpeg                                 # (fetched the first time, by --prepare)
 
         static_ffmpeg.add_paths()
-    except ImportError:
-        pass
+    except Exception as e:  # noqa: BLE001 - not installed, or no internet: use what the computer has
+        print(f"The bundled ffmpeg is not available ({type(e).__name__}: {e})", flush=True)
 
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))

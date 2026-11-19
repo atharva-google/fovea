@@ -190,6 +190,9 @@ def run_log(video: Path, refresh: bool, uploaded: bool) -> Callable[[Callable[[s
 
         try:
             pipeline.analyze(video, Settings(thinking=local_settings()["thinking"], refresh=refresh), gemini_key(), log)
+        except analysis.KeyRequired:
+            raise RuntimeError('Fovea needs a Gemini key to watch the video. Add one under Settings, '
+                               'then press "Watch this video".') from None
         finally:
             if uploaded:
                 video.unlink(missing_ok=True)

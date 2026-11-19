@@ -3,6 +3,19 @@
 A page in your browser, served by a small program on this computer. Nothing is sent anywhere except
 the video copy and text that Gemini needs.
 
+## Install (once)
+
+Download one file and double-click it. It needs nothing installed: it brings its own Python, libraries,
+ffmpeg and speech model (about 1.2 GB, a few minutes), puts a Fovea icon on the desktop and opens the app.
+
+- **Mac / Linux:** `install/Install Fovea.command` (on Linux: `bash "Install Fovea.command"`)
+- **Windows:** `install/Install Fovea.bat`
+
+Everything goes into one folder (`~/Fovea`, or `%LOCALAPPDATA%\Fovea` on Windows). Running the setup file
+again updates Fovea and keeps your projects and key. To remove Fovea, delete that folder and the icon.
+
+## Run from the code (for development)
+
 ```bash
 python frontend/server.py
 ```
@@ -20,6 +33,8 @@ the page reconnects by itself.
 ```
 frontend/
 ├── server.py     the local server: serves the page, runs the steps (standard library only)
+├── launch.py     what the Fovea icon runs: finds the bundled ffmpeg, then starts the server
+├── install/      the setup files
 ├── index.html    the page
 ├── style.css     the dark theme
 ├── app.js        what the page does
