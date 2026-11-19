@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Fovea</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="side-head">
+        <span class="brand">Fovea</span>
+        <button id="collapse" class="icon" title="Hide or show the projects">&#9776;</button>
+      </div>
+      <button id="new" class="btn primary wide" title="Add a video"><span class="plus">+</span><span class="label"> New video</span></button>
+      <input id="file" type="file" accept="video/*" hidden>
+      <div id="projects"></div>
+      <button id="settingsBtn" class="btn ghost wide" title="Settings"><span class="plus">&#9881;</span><span class="label"> Settings</span></button>
+    </aside>
+
+    <main id="main">
+      <header id="top"></header>
+      <section id="stage">
+        <div id="empty"></div>
+        <div id="frame" hidden>
+          <video id="video" playsinline preload="auto"></video>
+          <div id="dimLeft" class="dim"></div>
+          <div id="dimRight" class="dim"></div>
+          <div id="crop" title="Drag to move the picture for this shot"></div>
+        </div>
+      </section>
+      <section id="controls" hidden>
+        <button id="play" class="btn" title="Play or pause (space)">Play</button>
+        <span id="clock" class="mono">0:00.0</span>
+        <div id="formats" class="chips"></div>
+        <label class="check" title="A drag moves the picture in every format, not only this one">
+          <input id="allFormats" type="checkbox"> move all formats
+        </label>
+        <label class="pick">Play
+          <select id="mode">
+            <option value="original">the whole video</option>
+            <option value="selected">checked shots only</option>
+            <option value="edit">the edit</option>
+          </select>
+        </label>
+      </section>
+      <section id="timeline" hidden>
+        <div id="shotRow" class="row"></div>
+        <div id="soundRow" class="row thin"></div>
+        <div id="playhead"></div>
+      </section>
+    </main>
+
+    <aside id="panel" hidden>
+      <nav id="tabs">
+        <button data-tab="shots">Shots</button>
+        <button data-tab="edit">Edit</button>
+        <button data-tab="outputs">Outputs</button>
+      </nav>
+      <div id="panelBody"></div>
+    </aside>
+  </div>
+
+  <div id="progress" hidden></div>
+  <div id="toast" hidden></div>
+
+  <dialog id="settings">
+    <form method="dialog">
+      <h2>Settings</h2>
+      <label>Gemini API key
+        <input id="key" type="password" autocomplete="off" placeholder="paste a key to set or replace it">
+      </label>
+      <p id="keyNote" class="hint"></p>
+      <label>How hard Gemini thinks when it watches a video
+        <select id="thinking"></select>
+      </label>
+      <p class="hint">Lower is faster. The key stays on this computer.</p>
+      <div class="actions">
+        <button class="btn ghost" value="cancel">Cancel</button>
+        <button id="saveSettings" class="btn primary" value="save">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="asleep" hidden>
+    <div class="card">
+      <div class="moon">&#9790;</div>
+      <h2>Fovea dozed off</h2>
+      <p>It went to sleep to stay out of your way. Your projects are safe.</p>
+      <p>Click the Fovea icon on your desktop to wake it up. This page picks up again by itself.</p>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
