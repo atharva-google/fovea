@@ -6,7 +6,9 @@ It only uses Python's standard library and calls the ``fovea`` package as it is.
 this computer: projects are the folders in ``fovea_data/``, and what the page adds to a project
 (unchecked shots, focus changes, formats) is kept in ``fovea_data/<video name>/frontend.json``.
 
-The server stops by itself when the page has been closed or idle for a while (never during a job).
+This one program is all of Fovea that runs: it serves the page AND does the work. It stops by itself
+when the page has been closed, or nobody has touched it, for the idle time set in Settings (never
+during a job). After that nothing of Fovea is running; an open tab is only a picture of the page.
 """
 
 from __future__ import annotations
@@ -39,7 +41,7 @@ from fovea.job import Job, read_json, write_json  # noqa: E402
 from fovea.units import UNITS_VERSION, slots  # noqa: E402
 
 PORT = int(os.environ.get("FOVEA_PORT", "8765"))
-IDLE_S = float(os.environ.get("FOVEA_IDLE_MINUTES", "10")) * 60
+IDLE_MINUTES = float(os.environ.get("FOVEA_IDLE_MINUTES", "10"))     # until the user picks another in Settings
 DATA = Settings().data_dir
 LOCAL = Path(os.environ.get("FOVEA_LOCAL", HERE / ".local"))   # this computer's settings (the Gemini key); not in git
 STATIC = {"/": "index.html", "/app.js": "app.js", "/style.css": "style.css", "/sw.js": "sw.js",
@@ -64,7 +66,12 @@ def local_settings() -> Dict[str, Any]:
         stored = read_json(LOCAL / "settings.json")
     except (OSError, ValueError):
         stored = {}
-    return {"gemini_key": str(stored.get("gemini_key") or ""), "thinking": stored.get("thinking") or "low"}
+    try:
+        idle = min(240.0, max(0.1, float(stored["idle_minutes"])))
+    except (KeyError, TypeError, ValueError):
+        idle = IDLE_MINUTES
+    return {"gemini_key": str(stored.get("gemini_key") or ""), "thinking": stored.get("thinking") or "low",
+            "idle_minutes": idle}
 
 
 def gemini_key() -> Optional[str]:
@@ -301,6 +308,11 @@ class Handler(BaseHTTPRequestHandler):
                 current["gemini_key"] = str(body["gemini_key"] or "").strip()
             if body.get("thinking") in THINKING_LEVELS:
                 current["thinking"] = body["thinking"]
+            if "idle_minutes" in body:
+                try:
+                    current["idle_minutes"] = min(240.0, max(1.0, float(body["idle_minutes"])))
+                except (TypeError, ValueError):
+                    raise Problem(400, "Give the idle time in minutes") from None
             LOCAL.mkdir(parents=True, exist_ok=True)
             write_json(LOCAL / "settings.json", current)
             return self.send_json(self.app_state())
@@ -371,8 +383,9 @@ class Handler(BaseHTTPRequestHandler):
         folders = [d for d in DATA.iterdir() if (d / "job.json").is_file()] if DATA.is_dir() else []
         folders.sort(key=lambda d: -(d / "job.json").stat().st_mtime)
         settings = local_settings()
-        return {"projects": [summary_of(Job(d)) for d in folders], "idle_minutes": IDLE_S / 60,
+        return {"projects": [summary_of(Job(d)) for d in folders],
                 "settings": {"has_key": bool(gemini_key()), "thinking": settings["thinking"],
+                             "idle_minutes": settings["idle_minutes"],
                              "thinking_levels": list(THINKING_LEVELS)}}
 
     def upload(self, name: str) -> None:
@@ -504,7 +517,7 @@ def sleep_when_idle(server: ThreadingHTTPServer) -> None:
         if busy:
             global last_seen
             last_seen = time.time()
-        elif time.time() - last_seen > IDLE_S:
+        elif time.time() - last_seen > local_settings()["idle_minutes"] * 60:
             print("Fovea has been idle: going to sleep. Start it again to continue.")
             server.shutdown()
             return
@@ -527,7 +540,7 @@ def main() -> None:
             webbrowser.open(url)
         return
     threading.Thread(target=sleep_when_idle, args=(server,), daemon=True).start()
-    print(f"Fovea is awake at {url} (it goes to sleep after {IDLE_S / 60:g} idle minutes)")
+    print(f"Fovea is awake at {url} (it goes to sleep after {local_settings()['idle_minutes']:g} idle minutes)")
     if show:
         threading.Timer(0.5, webbrowser.open, [url]).start()
     try:

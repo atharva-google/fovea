@@ -87,6 +87,10 @@
         <select id="thinking"></select>
       </label>
       <p class="hint">Lower is faster. "low" is a good start.</p>
+      <label>Go to sleep after this many idle minutes
+        <input id="idle" type="number" min="1" max="240" step="1">
+      </label>
+      <p class="hint">Fovea stops running when you close this page or leave it untouched this long. It never stops in the middle of a job.</p>
       <div class="actions">
         <button class="btn ghost" value="cancel">Cancel</button>
         <button class="btn primary" value="save">Save</button>

@@ -66,9 +66,16 @@ function setAsleep(on) {
     }, 3000);
   }
 }
-setInterval(() => {              // "the page is open and in front": keeps the server awake
-  if (document.visibilityState === "visible" && !S.asleep) api("/api/ping").catch(() => {});
-}, 20000);
+// The server stays awake only while someone is using the page: it is in front, and was touched in the
+// last half minute (or a video is playing). Otherwise it hears nothing, and goes to sleep after the
+// idle time set in Settings.
+let touched = Date.now();
+["pointermove", "pointerdown", "keydown", "wheel"].forEach((kind) =>
+  document.addEventListener(kind, () => { touched = Date.now(); }, { passive: true }));
+setInterval(() => {
+  const inUse = Date.now() - touched < 30000 || !video.paused;
+  if (document.visibilityState === "visible" && inUse && !S.asleep) api("/api/ping").catch(() => {});
+}, 15000);
 
 // =========================================================================== loading
 async function refresh() {
@@ -566,6 +573,7 @@ function openSettings() {
     + '<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Get a key</a>';
   $("#thinking").innerHTML = (S.settings.thinking_levels || []).map((level) =>
     `<option ${level === S.settings.thinking ? "selected" : ""}>${esc(level)}</option>`).join("");
+  $("#idle").value = Math.round(S.settings.idle_minutes || 10);
   $("#settings").returnValue = "";
   $("#settings").showModal();
 }
@@ -725,6 +733,7 @@ $("#settingsBtn").onclick = openSettings;
 $("#settings").addEventListener("close", () => {
   if ($("#settings").returnValue !== "save") return;
   const body = { thinking: $("#thinking").value };
+  if (parseFloat($("#idle").value) >= 1) body.idle_minutes = parseFloat($("#idle").value);
   if ($("#key").value.trim()) body.gemini_key = $("#key").value.trim();
   saveSettings(body);
 });
