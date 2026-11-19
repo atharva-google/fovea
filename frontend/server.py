@@ -41,7 +41,7 @@ from fovea.units import UNITS_VERSION, slots  # noqa: E402
 PORT = int(os.environ.get("FOVEA_PORT", "8765"))
 IDLE_S = float(os.environ.get("FOVEA_IDLE_MINUTES", "10")) * 60
 DATA = Settings().data_dir
-LOCAL = HERE / ".local"                      # this computer's settings (the Gemini key); not in git
+LOCAL = Path(os.environ.get("FOVEA_LOCAL", HERE / ".local"))   # this computer's settings (the Gemini key); not in git
 STATIC = {"/": "index.html", "/app.js": "app.js", "/style.css": "style.css", "/sw.js": "sw.js"}
 
 JOBS: Dict[str, Dict[str, Any]] = {}         # project -> the job running (or last run) for it
@@ -300,7 +300,7 @@ class Handler(BaseHTTPRequestHandler):
                 current["gemini_key"] = str(body["gemini_key"] or "").strip()
             if body.get("thinking") in THINKING_LEVELS:
                 current["thinking"] = body["thinking"]
-            LOCAL.mkdir(exist_ok=True)
+            LOCAL.mkdir(parents=True, exist_ok=True)
             write_json(LOCAL / "settings.json", current)
             return self.send_json(self.app_state())
         if (method, path) == ("POST", "/api/projects"):
