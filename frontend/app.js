@@ -328,9 +328,6 @@ function renderNotice() {
       html = '<span>Gemini watches the video once, to find what matters in each shot.</span>'
         + '<button class="btn primary" data-do="log">Watch this video</button>';
     }
-  } else if (S.step === "framing" && p.rewatch && !isBusy()) {
-    html = `<span>The picture was cropped after Gemini watched it. The framing was moved over to fit; if it looks off, let Gemini watch again.</span>
-      <button class="btn" data-do="relog">Watch again</button>`;
   } else if (S.step === "edit" && !p.edits.length) {
     html = running("edit") ? spin("Gemini is choosing what to keep.")
       : `<span>Make a shorter version of about</span>${secondsHtml(15)}<span>seconds</span>
@@ -372,7 +369,9 @@ function renderControls() {
     html += `<span class="grow"></span>
       <button class="btn ghost" data-do="split" ${S.format ? "" : "disabled"}
         title="Cut this shot in two at this moment, for the format shown, so each part can be framed on its own (S)">Split shot here</button>
-      <button class="btn ghost" data-do="relog" ${off} title="Ask Gemini to watch the video again">Watch again</button>
+      <button class="btn ghost ${p.rewatch ? "warn" : ""}" data-do="relog" ${off} title="${p.rewatch
+    ? "The picture was cropped after Gemini watched it. The framing was moved over to fit; if it looks off, let Gemini watch again."
+    : "Ask Gemini to watch the video again"}">${p.rewatch ? "&#9888;&#65039; " : ""}Watch again</button>
       <button class="btn primary" data-do="render" ${off} title="Make a video in every format, leaving out unticked shots">Make the videos</button>`;
   } else if (edit) {
     html += check("keptPlay", S.keptPlay, "play only what is kept", "Play the shorter version, not the whole video");

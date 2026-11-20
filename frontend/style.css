@@ -54,6 +54,7 @@ a:hover { text-decoration: underline; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
 .btn.primary:hover { background: var(--accent-soft); border-color: var(--accent-soft); }
 .btn.ghost { background: transparent; }
+.btn.warn { border-color: var(--warn); color: var(--warn); }
 .btn.big { padding: 10px 24px; font-size: 14px; }
 .btn.small { padding: 2px 8px; font-size: 12px; }
 .btn.wide { width: 100%; display: flex; align-items: center; gap: 8px; overflow: hidden; }
