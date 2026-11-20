@@ -564,26 +564,41 @@ def sleep_when_idle(server: ThreadingHTTPServer) -> None:
             return
 
 
+class Server(ThreadingHTTPServer):
+    # On Windows, "reuse" would let a second Fovea take a port the first one still holds.
+    allow_reuse_address = os.name != "nt"
+
+
+def awake(url: str) -> bool:
+    """Is Fovea already running on this computer?"""
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))      # never through a proxy
+        with opener.open(f"{url}api/ping", timeout=3) as r:
+            return bool(json.load(r).get("fovea"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def main() -> None:
     url = f"http://127.0.0.1:{PORT}/"
     show = "--no-browser" not in sys.argv
-    wait_until = time.time() + (30 if "--restart" in sys.argv else 0)     # after an update: the old one is leaving
+    restart = "--restart" in sys.argv                # after an update: the old one is still leaving
+    if not restart and awake(url):                   # the icon was clicked while Fovea runs: show the page again
+        if show:
+            webbrowser.open(url)
+        return
+    wait_until = time.time() + (30 if restart else 0)
     server = None
     while server is None:
         try:
-            server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+            server = Server(("127.0.0.1", PORT), Handler)
         except OSError:
             if time.time() > wait_until:
                 break
             time.sleep(0.3)
     if server is None:
-        try:                                         # is that Fovea, already awake?
-            with urllib.request.urlopen(f"{url}api/ping", timeout=3) as r:
-                awake = json.load(r).get("fovea")
-        except Exception:  # noqa: BLE001
-            awake = False
-        if not awake:
-            raise SystemExit(f"Port {PORT} is used by another program. Set FOVEA_PORT to a free one.") from None
+        if not awake(url):
+            raise SystemExit(f"Port {PORT} is used by another program. Set FOVEA_PORT to a free one.")
         if show:
             webbrowser.open(url)
         return

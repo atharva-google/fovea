@@ -39,24 +39,28 @@ if [ -n "${FOVEA_NO_ICON:-}" ]; then
   echo "skipped"
 elif [ "$(uname)" = "Darwin" ]; then
   APP="$HOME/Applications/Fovea.app"
-  mkdir -p "$APP/Contents/MacOS"
-  cat > "$APP/Contents/MacOS/Fovea" <<LAUNCH
-#!/bin/bash
-exec "$ROOT/venv/bin/python" "$ROOT/app/frontend/launch.py"
-LAUNCH
-  chmod +x "$APP/Contents/MacOS/Fovea"
-  cat > "$APP/Contents/Info.plist" <<PLIST
+  PY="$ROOT/venv/bin/python"; LAUNCH="$ROOT/app/frontend/launch.py"
+  mkdir -p "$HOME/Applications"
+  rm -rf "$APP"
+  # A small real Mac app (an AppleScript applet) that starts Fovea on its own and quits at once. Because
+  # it quits, macOS runs it again on every click, and launch.py then opens the page if Fovea is awake.
+  # (An app that is only a shell script is not tracked properly by macOS: a second click does nothing,
+  # or says "The application Fovea is not open anymore".)
+  if ! osacompile -o "$APP" -e "do shell script \"nohup \" & quoted form of \"$PY\" & \" \" & quoted form of \"$LAUNCH\" & \" >/dev/null 2>&1 &\"" >/dev/null 2>&1; then
+    mkdir -p "$APP/Contents/MacOS"                 # no osacompile: a plain script app that also quits at once
+    printf '#!/bin/bash\nnohup "%s" "%s" >/dev/null 2>&1 &\n' "$PY" "$LAUNCH" > "$APP/Contents/MacOS/Fovea"
+    chmod +x "$APP/Contents/MacOS/Fovea"
+    cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleName</key><string>Fovea</string>
   <key>CFBundleIdentifier</key><string>local.fovea.app</string>
   <key>CFBundleExecutable</key><string>Fovea</string>
-  <key>CFBundleIconFile</key><string>Fovea</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>LSUIElement</key><true/>
 </dict></plist>
 PLIST
+  fi
   (                                               # the icon picture; Fovea works without it
     SET="$(mktemp -d)/Fovea.iconset"; mkdir -p "$SET" "$APP/Contents/Resources"
     for size in 16 32 128 256; do
@@ -64,7 +68,12 @@ PLIST
       sips -z $((size * 2)) $((size * 2)) "$ROOT/app/frontend/icon.png" --out "$SET/icon_${size}x${size}@2x.png"
     done
     iconutil -c icns "$SET" -o "$APP/Contents/Resources/Fovea.icns"
+    plutil -replace CFBundleIconFile -string Fovea "$APP/Contents/Info.plist"
+    plutil -remove CFBundleIconName "$APP/Contents/Info.plist" || true
+    rm -f "$APP/Contents/Resources/Assets.car"
   ) >/dev/null 2>&1 || true
+  plutil -replace LSUIElement -bool true "$APP/Contents/Info.plist" >/dev/null 2>&1 || true   # no Dock icon
+  codesign --force --deep -s - "$APP" >/dev/null 2>&1 || true      # the app was changed after it was made
   touch "$APP"
   ln -sfn "$APP" "$HOME/Desktop/Fovea"
   echo "Fovea is in your Applications folder and on your Desktop."
