@@ -43,7 +43,7 @@ const S = {
   shot: null,                   // the shot under the playhead
   edit: null, wantEdit: null,   // the shorter version shown
   skipPlay: true, keptPlay: true, segs: null, // what Play plays: everything, or only some stretches
-  allFormats: false, drag: null, poll: null, dismissed: null, asleep: false, updating: false,
+  drag: null, poll: null, dismissed: null, asleep: false, updating: false,
   videoFor: null, videoKind: null, // which video is loaded: "source", "proxy" or "failed"
   seeking: false,
   cut: null,                    // step 1, while cropping: the part of the picture to keep {l, t, r, b}
@@ -364,7 +364,6 @@ function renderControls() {
     <select id="addFormat" title="Add another format"><option value="">+ Add a format</option>${more}
       <option value="custom">Another shape…</option></select></div><div class="ctl">`;
   if (S.step === "framing") {
-    html += check("allFormats", S.allFormats, "move all formats together", "A drag then moves the picture in every format, not only the one shown");
     if (p.state.skipped.length) html += check("skipPlay", S.skipPlay, "skip unticked shots", "Play the video without the shots you unticked");
     html += `<span class="grow"></span>
       <button class="btn ghost" data-do="split" ${S.format ? "" : "disabled"}
@@ -605,7 +604,8 @@ crop.addEventListener("pointerdown", (e) => {
   const left = parseFloat(crop.style.left) / 100 || 0;
   const part = pieceAt(video.currentTime || 0);
   if (!part) return;
-  S.drag = { x: e.clientX, from: left, left, w: track.w, part, far: false, saving: false };
+  // with Ctrl (or Cmd on a Mac) held, the move is made in every format, not only the one shown
+  S.drag = { x: e.clientX, from: left, left, w: track.w, part, far: false, saving: false, all: e.ctrlKey || e.metaKey };
 });
 crop.addEventListener("pointermove", (e) => {
   const d = S.drag;
@@ -614,9 +614,11 @@ crop.addEventListener("pointermove", (e) => {
   d.far = d.far || Math.abs(dx) > 0.004;
   d.left = clamp(d.from + dx, 0, 1 - d.w);
 });
-crop.addEventListener("pointerup", async () => {
+crop.addEventListener("contextmenu", (e) => e.preventDefault());   // Ctrl+click on a Mac would open a menu
+crop.addEventListener("pointerup", async (e) => {
   const d = S.drag;
   if (!d || d.saving) return;
+  d.all = d.all || e.ctrlKey || e.metaKey;
   if (!d.far) {
     S.drag = null;
     return;
@@ -624,7 +626,9 @@ crop.addEventListener("pointerup", async () => {
   d.saving = true;
   const focus = JSON.parse(JSON.stringify(S.p.state.focus));
   // a shot that was split is split for this format only, so its parts are moved for this format only
-  const every = S.allFormats && piecesNow().filter((x) => x.shot === d.part.shot).length === 1;
+  const whole = piecesNow().filter((x) => x.shot === d.part.shot).length === 1;
+  const every = d.all && whole;
+  if (d.all && !whole) toast("This shot is split in this format only, so the move was made in this format only");
   const key = every ? "*" : S.format;
   if (every) Object.keys(focus).forEach((f) => { if (f !== "*") delete focus[f][d.part.id]; });
   focus[key] = { ...(focus[key] || {}), [d.part.id]: Math.round((d.left + d.w / 2) * 100) };
@@ -831,7 +835,7 @@ $("#controls").onchange = (e) => {
     if (!added) return;
     S.format = added;
     saveState({ formats: [...S.p.state.formats, added] });
-  } else if (id === "allFormats" || id === "skipPlay" || id === "keptPlay") {
+  } else if (id === "skipPlay" || id === "keptPlay") {
     S[id] = e.target.checked;
     computeSegs();
   }
