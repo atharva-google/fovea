@@ -101,6 +101,7 @@ def page_state(job: Job) -> Dict[str, Any]:
         s = {}
     return {"skipped": list(s.get("skipped") or []), "focus": dict(s.get("focus") or {}),
             "splits": dict(s.get("splits") or {}), "crop": s.get("crop") or None,
+            "watched_crop": s.get("watched_crop") or None,     # how the picture was cropped when Gemini watched it
             "formats": list(s.get("formats") or renderer.DEFAULT_FORMATS)}
 
 
@@ -184,6 +185,7 @@ def describe(job: Job) -> Dict[str, Any]:
             out["prepared"] = False
     stored = analysis.load(job) if out["info"] else None
     out["ready"] = bool(stored)
+    out["rewatch"] = bool(stored) and out["state"]["crop"] != out["state"]["watched_crop"]   # cropped since Gemini watched
     out["prepared"] = out["prepared"] or bool(stored)
     if not stored:
         return out
@@ -276,21 +278,34 @@ def black_bars(path: Path) -> Optional[Dict[str, float]]:
     return {"l": left / width, "t": top / height, "r": right / width, "b": bottom / height}
 
 
+def shifted(x: float, old: Optional[Dict[str, float]], new: Optional[Dict[str, float]]) -> float:
+    """A position (% of the width) in the picture cropped as ``old``, as a position in the picture cropped
+    as ``new`` (None = not cropped). A point that is no longer in the picture lands on the nearest edge."""
+    whole = {"l": 0.0, "r": 1.0}
+    old, new = old or whole, new or whole
+    at = old["l"] + x / 100 * (old["r"] - old["l"])
+    return round(min(100.0, max(0.0, (at - new["l"]) / (new["r"] - new["l"]) * 100)), 2)
+
+
 def run_crop(job: Job, rect: Optional[Dict[str, float]]) -> Callable[[Callable[[str], None]], None]:
-    """Cut the edges off the picture (or, with no ``rect``, put them back), then start the video over:
-    everything found so far was found in the old picture. The file as it was added is kept in original/."""
+    """Cut the edges off the picture, or with no ``rect`` put them back. The file as it was added is kept
+    in original/.
+
+    Cropping changes the picture, not the time: the shots, the words and what Gemini wrote stay. The
+    framing is moved over to the new picture; Gemini is NOT asked again (the page offers that)."""
     def work(log: Callable[[str], None]) -> None:
-        source = job.source
+        source, state, settings = job.source, page_state(job), Settings()
         original = job.root / "original" / source.name
         if rect is None:
             if not original.is_file():
                 raise RuntimeError("This video is not cropped")
             log("Putting the whole picture back ...")
-            shutil.move(str(original), str(source))
+            os.replace(original, source)
         else:
-            if not original.is_file():
+            first = not original.is_file()
+            if first:                                   # the video stays where it is, so it keeps playing
                 original.parent.mkdir(exist_ok=True)
-                shutil.move(str(source), str(original))
+                shutil.copy2(source, original)
             info = media.probe(original)
             w = int(round((rect["r"] - rect["l"]) * info["width"])) // 2 * 2
             h = int(round((rect["b"] - rect["t"]) * info["height"])) // 2 * 2
@@ -305,14 +320,40 @@ def run_crop(job: Job, rect: Optional[Dict[str, float]]) -> Callable[[Callable[[
                     break
             if res.returncode != 0:
                 made.unlink(missing_ok=True)
-                shutil.move(str(original), str(source))
+                if first:
+                    original.unlink(missing_ok=True)
                 raise RuntimeError(f"The video could not be cropped: {res.stderr.strip()[-300:]}")
             made.replace(source)
-        for stale in ("prep", "framing", "edit", "frontend_thumbs"):
-            shutil.rmtree(job.root / stale, ignore_errors=True)
+
+        # ---- the picture changed: its size, the preview copy, the small pictures of the shots
         write_json(job.root / "job.json", {"source": source.name, "sha256": fingerprint(source)})
-        write_json(job.root / "frontend.json", {"formats": page_state(job)["formats"], "crop": rect})
-        run_prepare(job)(log)
+        info = media.probe(source)
+        write_json(job.video_info, info)
+        shutil.rmtree(job.root / "frontend_thumbs", ignore_errors=True)
+        # ---- the framing, moved over to the new picture. Always worked out from what Gemini gave for the
+        #      picture it watched (kept in watched.json), so cropping again and again loses nothing.
+        framing_path, watched_path = job.root / "framing" / "framing.json", job.root / "framing" / "watched.json"
+        if framing_path.is_file():
+            if not watched_path.is_file():
+                write_json(watched_path, {"rect": state["watched_crop"], "shots": read_json(framing_path)["shots"]})
+            watched = read_json(watched_path)
+            write_json(framing_path, {**read_json(framing_path), "shots": [
+                {**shot, "points": [{**q, "x": shifted(q["x"], watched["rect"], rect)} for q in shot["points"]]}
+                for shot in watched["shots"]]})
+        state["focus"] = {fmt: {part: round(shifted(x, state["crop"], rect)) for part, x in moved.items()}
+                          for fmt, moved in state["focus"].items()}
+        state["crop"] = rect
+        write_json(job.root / "frontend.json", state)
+        # ---- everything stored says which file it belongs to
+        stored = [job.root / "prep" / "units.json", job.root / "prep" / "log.json", framing_path,
+                  *(job.root / "edit").glob("edit_*.json")]
+        for path in stored:
+            if path.is_file():
+                write_json(path, {**read_json(path), "fingerprint": job.fingerprint})
+        log("Making the preview copy ...")
+        media.make_proxy(source, job.proxy, settings.proxy_height, settings.proxy_fps or info["fps"])
+        if not ((job.root / "prep" / "shots.csv").is_file() and (job.root / "audio" / "transcript.csv").is_file()):
+            run_prepare(job)(log)
     return work
 
 
@@ -325,6 +366,10 @@ def run_log(job: Job, refresh: bool) -> Callable[[Callable[[str], None]], None]:
                              gemini_key(), log)
         except analysis.KeyRequired:
             raise RuntimeError("Fovea needs a Gemini key to watch the video.") from None
+        state = page_state(job)                       # Gemini has now seen the picture as it is cropped today
+        state["watched_crop"] = state["crop"]
+        write_json(job.root / "frontend.json", state)
+        (job.root / "framing" / "watched.json").unlink(missing_ok=True)
     return work
 
 
@@ -538,7 +583,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError
                 except (KeyError, TypeError, ValueError):
                     raise Problem(400, "That crop is too small") from None
-            start(pid, "prepare", run_crop(job, rect))
+            start(pid, "crop", run_crop(job, rect))
             return self.send_json(describe(job))
         if method == "POST" and rest == "prepare":
             start(pid, "prepare", run_prepare(job))

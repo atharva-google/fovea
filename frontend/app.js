@@ -249,8 +249,8 @@ function renderAll() {
   frame.hidden = !hasVideo || done;
   $("#finished").hidden = !done;
   if (done) $("#finished").innerHTML = finishedHtml();
-  $("#empty").hidden = hasVideo;
-  if (!hasVideo) $("#empty").innerHTML = welcomeHtml();
+  $("#empty").hidden = !!p;                        // the start screen: only when no video is open
+  if (!p) $("#empty").innerHTML = welcomeHtml();
   $("#noplay").hidden = S.videoKind !== "failed";
   $("#player").hidden = !hasVideo || done;
   $("#cut").hidden = !(S.cut && S.step === "video");
@@ -312,7 +312,8 @@ function renderNotice() {
     const cropButton = isBusy() ? "" : p.state.crop
       ? '<button class="btn" data-do="cropRemove" title="Go back to the picture as it was added">Remove the crop</button>'
       : '<button class="btn" data-do="crop" title="Cut away black bars or edges before anything else happens">Crop the picture</button>';
-    if (running("prepare")) html = spin("Getting the video ready: finding the shots and writing down what is said. You can play it meanwhile.");
+    if (running("crop")) html = spin("Cropping the picture. What was found so far is kept.");
+    else if (running("prepare")) html = spin("Getting the video ready: finding the shots and writing down what is said. You can play it meanwhile.");
     else if (p.prepared) {
       html = `<span>This video is ready${p.prep ? `: ${p.prep.shots} shots, ${p.prep.words} spoken words` : ""}.</span>`
         + cropButton + (p.ready ? "" : '<button class="btn primary" data-do="next">Next: Framing</button>');
@@ -327,6 +328,9 @@ function renderNotice() {
       html = '<span>Gemini watches the video once, to find what matters in each shot.</span>'
         + '<button class="btn primary" data-do="log">Watch this video</button>';
     }
+  } else if (S.step === "framing" && p.rewatch && !isBusy()) {
+    html = `<span>The picture was cropped after Gemini watched it. The framing was moved over to fit; if it looks off, let Gemini watch again.</span>
+      <button class="btn" data-do="relog">Watch again</button>`;
   } else if (S.step === "edit" && !p.edits.length) {
     html = running("edit") ? spin("Gemini is choosing what to keep.")
       : `<span>Make a shorter version of about</span>${secondsHtml(15)}<span>seconds</span>
@@ -508,7 +512,6 @@ async function startCut() {
 function applyCut() {
   const c = S.cut;
   if (c.l < 0.005 && c.t < 0.005 && c.r > 0.995 && c.b > 0.995) return toast("Drag an edge inwards first");
-  if (S.p.ready && !confirm("Cropping starts this video over: Gemini will have to watch it again, and changes you made are lost. Continue?")) return undefined;
   S.cut = null;
   return run("/crop", c);
 }
@@ -630,7 +633,7 @@ crop.addEventListener("pointercancel", () => { S.drag = null; });
 
 // =========================================================================== jobs
 const KINDS = {
-  update: "Updating Fovea", upload: "Adding the video", prepare: "Getting the video ready",
+  update: "Updating Fovea", upload: "Adding the video", prepare: "Getting the video ready", crop: "Cropping the picture",
   log: "Gemini is watching the video", render: "Making the videos", edit: "Making the shorter version",
 };
 
@@ -706,8 +709,7 @@ function act(what) {
     return renderAll();
   }
   if (what === "cropRemove") {
-    return confirm("Go back to the whole picture? This starts the video over: Gemini will have to watch it again.")
-      && run("/crop", { remove: true });
+    return run("/crop", { remove: true });
   }
   if (what === "prepare") return run("/prepare", {});
   if (what === "next") return setStep("framing");
