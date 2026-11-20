@@ -26,11 +26,15 @@
       <nav id="steps" class="seg" hidden></nav>
       <section id="stage">
         <div id="empty"></div>
+        <div id="finished" hidden></div>
         <div id="frame" hidden>
           <video id="video" playsinline preload="auto"></video>
           <div id="dimLeft" class="dim"></div>
           <div id="dimRight" class="dim"></div>
           <div id="crop" title="Drag to move the picture for this shot"></div>
+          <div id="cut" hidden><div id="cutBox">
+            <i data-edge="t"></i><i data-edge="b"></i><i data-edge="l"></i><i data-edge="r"></i>
+          </div></div>
           <div id="noplay" hidden>Your browser cannot play this file directly.<br>The picture appears here once the video is ready.</div>
         </div>
       </section>
@@ -85,6 +89,7 @@
           <kbd>Space</kbd><span>Play or pause</span>
           <kbd>&larr;</kbd><span>Previous shot</span>
           <kbd>&rarr;</kbd><span>Next shot</span>
+          <kbd>S</kbd><span>Framing: cut the shot in two here, for the format shown</span>
           <kbd>Ctrl + B</kbd><span>Show or hide the list of videos (left)</span>
           <kbd>Ctrl + Shift + B</kbd><span>Show or hide the details (right)</span>
         </div>

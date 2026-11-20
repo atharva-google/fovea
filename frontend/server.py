@@ -37,7 +37,7 @@ from fovea import analysis, framing, media, shots as shot_files, transcript  # n
 from fovea import edit as editor  # noqa: E402
 from fovea import render as renderer  # noqa: E402
 from fovea.config import THINKING_LEVELS, Settings  # noqa: E402
-from fovea.job import Job, read_json, write_json  # noqa: E402
+from fovea.job import Job, fingerprint, read_json, write_json  # noqa: E402
 from fovea.units import UNITS_VERSION, slots  # noqa: E402
 
 PORT = int(os.environ.get("FOVEA_PORT", "8765"))
@@ -100,15 +100,43 @@ def page_state(job: Job) -> Dict[str, Any]:
     except (OSError, ValueError):
         s = {}
     return {"skipped": list(s.get("skipped") or []), "focus": dict(s.get("focus") or {}),
+            "splits": dict(s.get("splits") or {}), "crop": s.get("crop") or None,
             "formats": list(s.get("formats") or renderer.DEFAULT_FORMATS)}
 
 
-def framed(stored: Dict[str, Any], state: Dict[str, Any], fmt: str) -> Dict[str, Any]:
-    """The focus line for one format: Gemini's, with the shots the user moved held where they put them."""
+def pieces(stored: Dict[str, Any], state: Dict[str, Any], fmt: str) -> List[Dict[str, Any]]:
+    """Every shot as the pieces the user cut it into FOR THIS FORMAT (one piece when it was not cut).
+    A piece is named after its shot, and after where it starts when it is not the first: "V04@5.20"."""
     moved = {**state["focus"].get("*", {}), **state["focus"].get(fmt, {})}
-    start = {v.id: v.start for v in stored["video"]}
-    return {"shots": [{"id": s["id"], "points": [{"t": start[s["id"]], "move": "cut", "x": moved[s["id"]], "slot": ""}]
-                       if s["id"] in moved else s["points"]} for s in stored["framing"]["shots"]]}
+    cuts = state["splits"].get(fmt, {})
+    out = []
+    for v in stored["video"]:
+        starts = [v.start, *sorted(cuts.get(v.id, []))]
+        for i, a in enumerate(starts):
+            key = v.id if i == 0 else f"{v.id}@{a:.2f}"
+            out.append({"id": key, "shot": v.id, "start": a, "end": starts[i + 1] if i + 1 < len(starts) else v.end,
+                        "label": v.id + (chr(97 + i) if len(starts) > 1 else ""), "moved": key in moved})
+    return out
+
+
+def framed(stored: Dict[str, Any], state: Dict[str, Any], fmt: str) -> Dict[str, Any]:
+    """The focus line for one format: Gemini's, with the pieces the user moved held where they put them.
+    A piece that was not moved itself stays where the piece before it in the shot was put."""
+    moved = {**state["focus"].get("*", {}), **state["focus"].get(fmt, {})}
+    line = {s["id"]: s["points"] for s in stored["framing"]["shots"]}
+    shots: List[Dict[str, Any]] = []
+    held = None
+    for piece in pieces(stored, state, fmt):
+        if piece["id"] == piece["shot"]:                  # the first piece of a shot
+            held = None
+            shots.append({"id": piece["shot"], "points": []})
+        held = moved.get(piece["id"], held)
+        own, a, b = line[piece["shot"]], piece["start"], piece["end"]
+        shots[-1]["points"].append({"t": a, "move": "cut", "slot": "",
+                                    "x": held if held is not None else round(framing.position_at(own, a), 2)})
+        if held is None:
+            shots[-1]["points"] += [q for q in own if a + 1e-6 < q["t"] < b - 1e-6]
+    return {"shots": shots}
 
 
 def crop_width(info: Dict[str, Any], fmt: str) -> Optional[int]:
@@ -142,6 +170,7 @@ def describe(job: Job) -> Dict[str, Any]:
     """Everything the page shows about one project."""
     out = {**summary_of(job), "name": job.source.name, "state": page_state(job), "job": JOBS.get(job.root.name),
            "has_video": job.source.is_file(), "has_proxy": (job.root / "prep" / "proxy.mp4").is_file(),
+           "video_version": int(job.source.stat().st_mtime) if job.source.is_file() else 0,
            "outputs": sorted(({"name": f.name, "size": f.stat().st_size, "time": f.stat().st_mtime}
                               for f in (job.root / "outputs").glob("*.mp4")), key=lambda f: -f["time"])
            if (job.root / "outputs").is_dir() else []}
@@ -167,8 +196,9 @@ def describe(job: Job) -> Dict[str, Any]:
     out["audio"] = [{"id": a.id, "start": a.start, "end": a.end, "shots": a.over, "heard": heard[a.id]["heard"],
                      "kind": heard[a.id]["kind"], "speaker": heard[a.id]["speaker"]} for a in stored["audio"]]
     out["slots"] = [{**s, "kind": kinds.get(s["id"], "other")} for s in slots(stored["audio"], stored["video"])]
-    out["tracks"] = {}
+    out["tracks"], out["pieces"] = {}, {}
     for fmt in state["formats"]:
+        out["pieces"][fmt] = pieces(stored, state, fmt)
         crop_w = crop_width(info, fmt)
         if crop_w is None:
             out["tracks"][fmt] = None
@@ -223,6 +253,66 @@ def run_prepare(job: Job) -> Callable[[Callable[[str], None]], None]:
             words = pool.submit(pipeline._transcript, job, settings, info["has_audio"], log)
             found = pool.submit(pipeline._shots, job, settings, info["fps"], log)
             words.result(), found.result()
+    return work
+
+
+def black_bars(path: Path) -> Optional[Dict[str, float]]:
+    """Where the picture really is when the video has black bars around it: ``{"l", "t", "r", "b"}`` as
+    shares of the frame, or None when there are no bars."""
+    info = media.probe(path)
+    width, height, found = int(info["width"]), int(info["height"]), []
+    for share in (0.25, 0.6):                     # two places, in case one of them is a dark scene
+        res = subprocess.run(["ffmpeg", "-v", "info", "-nostdin", "-ss", f"{info['duration'] * share:.2f}", "-i", str(path),
+                              "-t", "3", "-vf", "cropdetect=limit=24:round=2:reset=0", "-an", "-f", "null", "-"],
+                             capture_output=True, text=True, errors="ignore")
+        last = re.findall(r"crop=(\d+):(\d+):(\d+):(\d+)", res.stderr)[-1:]
+        found += [tuple(int(n) for n in m) for m in last]
+    if not found:
+        return None
+    left, top = min(x for _, _, x, _ in found), min(y for _, _, _, y in found)
+    right, bottom = max(x + w for w, _, x, _ in found), max(y + h for _, h, _, y in found)
+    if (right - left) > 0.99 * width and (bottom - top) > 0.99 * height:
+        return None
+    return {"l": left / width, "t": top / height, "r": right / width, "b": bottom / height}
+
+
+def run_crop(job: Job, rect: Optional[Dict[str, float]]) -> Callable[[Callable[[str], None]], None]:
+    """Cut the edges off the picture (or, with no ``rect``, put them back), then start the video over:
+    everything found so far was found in the old picture. The file as it was added is kept in original/."""
+    def work(log: Callable[[str], None]) -> None:
+        source = job.source
+        original = job.root / "original" / source.name
+        if rect is None:
+            if not original.is_file():
+                raise RuntimeError("This video is not cropped")
+            log("Putting the whole picture back ...")
+            shutil.move(str(original), str(source))
+        else:
+            if not original.is_file():
+                original.parent.mkdir(exist_ok=True)
+                shutil.move(str(source), str(original))
+            info = media.probe(original)
+            w = int(round((rect["r"] - rect["l"]) * info["width"])) // 2 * 2
+            h = int(round((rect["b"] - rect["t"]) * info["height"])) // 2 * 2
+            x, y = int(round(rect["l"] * info["width"])), int(round(rect["t"] * info["height"]))
+            log(f"Cropping the picture to {w}x{h} ...")
+            made = source.with_name("cropping_" + source.name)
+            for sound in (["-c:a", "copy"], ["-c:a", "aac", "-b:a", "256k"]):
+                res = subprocess.run(["ffmpeg", "-y", "-v", "error", "-nostdin", "-i", str(original), "-vf",
+                                      f"crop={w}:{h}:{x}:{y}", "-c:v", "libx264", "-preset", "medium", "-crf", "16",
+                                      "-pix_fmt", "yuv420p", *sound, str(made)], capture_output=True, text=True, errors="ignore")
+                if res.returncode == 0:
+                    break
+            if res.returncode != 0:
+                made.unlink(missing_ok=True)
+                shutil.move(str(original), str(source))
+                raise RuntimeError(f"The video could not be cropped: {res.stderr.strip()[-300:]}")
+            made.replace(source)
+        for stale in ("prep", "framing", "edit", "frontend_thumbs"):
+            shutil.rmtree(job.root / stale, ignore_errors=True)
+        write_json(job.root / "job.json", {"source": source.name, "sha256": fingerprint(source)})
+        write_json(job.root / "frontend.json", {"formats": page_state(job)["formats"], "crop": rect})
+        run_prepare(job)(log)
     return work
 
 
@@ -420,9 +510,35 @@ class Handler(BaseHTTPRequestHandler):
                 if "focus" in body:
                     state["focus"] = {str(fmt): {str(shot): max(0, min(100, round(float(x)))) for shot, x in moved.items()}
                                       for fmt, moved in body["focus"].items() if moved}
-            except (ValueError, TypeError, AttributeError) as e:
-                raise Problem(400, str(e) or "That could not be saved") from None
+                if "splits" in body:                  # where the user cut shots in two, per format
+                    stored = analysis.load(job)
+                    span = {v.id: (v.start, v.end) for v in stored["video"]} if stored else {}
+                    state["splits"] = {}
+                    for fmt, per_shot in body["splits"].items():
+                        for shot, times in per_shot.items():
+                            cuts = sorted({round(float(t), 2) for t in times})
+                            edges = [span[shot][0], *cuts, span[shot][1]]
+                            if any(y - x < 0.2 for x, y in zip(edges, edges[1:])):
+                                raise ValueError("That is too close to another cut")
+                            if cuts:
+                                state["splits"].setdefault(str(fmt), {})[str(shot)] = cuts
+            except (ValueError, TypeError, AttributeError, KeyError) as e:
+                raise Problem(400, str(e) if isinstance(e, ValueError) and str(e) else "That could not be saved") from None
             write_json(job.root / "frontend.json", state)
+            return self.send_json(describe(job))
+        if method == "GET" and rest == "cropdetect":
+            return self.send_json(black_bars(job.source))
+        if method == "POST" and rest == "crop":
+            body = self.read_json()
+            rect = None
+            if not body.get("remove"):
+                try:
+                    rect = {k: min(1.0, max(0.0, float(body[k]))) for k in ("l", "t", "r", "b")}
+                    if rect["r"] - rect["l"] < 0.2 or rect["b"] - rect["t"] < 0.2:
+                        raise ValueError
+                except (KeyError, TypeError, ValueError):
+                    raise Problem(400, "That crop is too small") from None
+            start(pid, "prepare", run_crop(job, rect))
             return self.send_json(describe(job))
         if method == "POST" and rest == "prepare":
             start(pid, "prepare", run_prepare(job))

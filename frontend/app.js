@@ -18,20 +18,35 @@ const STEPS = [
   ["video", "Video", ""],
   ["framing", "Framing", "Opens once the video is ready"],
   ["edit", "Shorter version", "Opens once Gemini has watched the video"],
+  ["done", "Finished videos", "Opens once a video has been made"],
 ];
+// The shapes people ask for, by the name they know them by.
+const FORMATS = [
+  ["9:16", "Vertical", "Reels, Shorts, TikTok, Stories"],
+  ["4:5", "Portrait", "Instagram and Facebook feed"],
+  ["1:1", "Square", "feeds on most platforms"],
+  ["3:4", "Tall", "portrait screens"],
+  ["4:3", "Classic", "older screens, some feeds"],
+  ["16:9", "Widescreen", "YouTube, TV, websites"],
+];
+const formatName = (f) => {
+  const known = FORMATS.find(([ratio]) => ratio === f);
+  return known ? `${known[1]} ${f}` : f;
+};
 const S = {
   projects: [], settings: {},   // from the server
   pid: null, p: null,           // the open video
   home: false,                  // the start screen is shown although there are videos
   step: "video",                // which of the three steps is shown
   format: null,                 // the crop window shown, e.g. "9:16"
-  panelTab: "main", panelOff: false, // the right panel: its tab, and whether it is hidden
+  panelOff: false,              // the right panel is hidden
   shot: null,                   // the shot under the playhead
   edit: null, wantEdit: null,   // the shorter version shown
   skipPlay: true, keptPlay: true, segs: null, // what Play plays: everything, or only some stretches
   allFormats: false, drag: null, poll: null, dismissed: null, asleep: false, updating: false,
   videoFor: null, videoKind: null, // which video is loaded: "source", "proxy" or "failed"
   seeking: false,
+  cut: null,                    // step 1, while cropping: the part of the picture to keep {l, t, r, b}
 };
 const video = $("#video"), frame = $("#frame"), crop = $("#crop");
 
@@ -119,7 +134,8 @@ function goHome() {
   setProject(null);
 }
 
-const unlocked = (step) => step === "video" || !!(S.p && (step === "framing" ? S.p.prepared : S.p.ready));
+const unlocked = (step) => step === "video" || !!(S.p && (step === "framing" ? S.p.prepared
+  : step === "edit" ? S.p.ready : S.p.outputs.length));
 
 function setProject(p) {
   const fresh = (p ? p.id : null) !== setProject.last;      // another video than the one shown before
@@ -128,18 +144,18 @@ function setProject(p) {
   if (!p || !p.has_video) {
     S.videoFor = S.videoKind = null;
     video.removeAttribute("src");
-  } else if (S.videoFor !== p.id) {                  // the file itself: it plays as soon as it is added
-    S.videoFor = p.id;
+  } else if (S.videoFor !== `${p.id}:${p.video_version}`) {   // the file itself: it plays as soon as it is added
+    S.videoFor = `${p.id}:${p.video_version}`;
     S.videoKind = "source";
-    video.src = here("/video");
+    video.src = here(`/video?v=${p.video_version}`);
   } else if (S.videoKind === "failed" && p.has_proxy) {
     S.videoKind = "proxy";                           // the browser could not play the file: the prepared copy
-    video.src = here("/video?proxy=1");
+    video.src = here(`/video?proxy=1&v=${p.video_version}`);
   }
+  if (fresh || isBusyJob(p)) S.cut = null;
   if (p) {
     if (fresh) {
       S.step = p.ready ? "framing" : "video";
-      S.panelTab = "main";
       S.format = null;
     }
     if (!unlocked(S.step)) S.step = unlocked("framing") ? "framing" : "video";
@@ -160,7 +176,7 @@ video.addEventListener("error", () => {
   if (!S.videoFor || S.videoKind !== "source") return;
   if (S.p && S.p.has_proxy) {
     S.videoKind = "proxy";
-    video.src = here("/video?proxy=1");
+    video.src = here(`/video?proxy=1&v=${S.p.video_version}`);
   } else {
     S.videoKind = "failed";
     $("#noplay").hidden = false;
@@ -171,17 +187,16 @@ video.addEventListener("loadedmetadata", () => {
   fit();
 });
 
-const working = () => !!(S.p && S.p.ready && S.step !== "video");   // the crop window, timeline and panel are shown
+const isBusyJob = (p) => !!(p && p.job && p.job.status === "running");
+// the crop window, timeline and side panel are shown
+const working = () => !!(S.p && S.p.ready && (S.step === "framing" || S.step === "edit"));
+const piecesNow = () => (working() && S.format && S.p.pieces[S.format]) || [];
+const pieceAt = (t) => piecesNow().find((x) => t >= x.start && t < x.end) || null;
 const currentEdit = () => (S.p && S.p.ready ? S.p.edits.find((e) => e.name === S.edit) : null) || null;
 const isBusy = () => !!(S.p && S.p.job && S.p.job.status === "running");
 const duration = () => (S.p && S.p.ready ? S.p.shots[S.p.shots.length - 1].end
   : (isFinite(video.duration) && video.duration) || (S.p && S.p.info && S.p.info.duration) || 0);
 const shotAt = (t) => S.p.shots.find((s) => t >= s.start && t < s.end) || S.p.shots[S.p.shots.length - 1];
-const movedTo = (shot) => {
-  const focus = S.p.state.focus;
-  const own = (focus[S.format] || {})[shot];
-  return own != null ? own : (focus["*"] || {})[shot];
-};
 
 function computeSegs() {
   const p = S.p;
@@ -213,7 +228,6 @@ async function saveState(change) {
 function setStep(step) {
   if (!S.p || !unlocked(step) || step === S.step) return;
   S.step = step;
-  S.panelTab = "main";
   computeSegs();
   renderAll();
 }
@@ -230,11 +244,17 @@ function renderAll() {
     $("#steps").innerHTML = STEPS.map(([id, label, locked], i) => `<button data-step="${id}"
       class="${id === S.step ? "on" : ""}" ${unlocked(id) ? "" : `disabled title="${locked}"`}>${i + 1}. ${label}</button>`).join("");
   }
-  frame.hidden = !hasVideo;
+  const done = !!p && S.step === "done";
+  if (done) video.pause();
+  frame.hidden = !hasVideo || done;
+  $("#finished").hidden = !done;
+  if (done) $("#finished").innerHTML = finishedHtml();
   $("#empty").hidden = hasVideo;
   if (!hasVideo) $("#empty").innerHTML = welcomeHtml();
   $("#noplay").hidden = S.videoKind !== "failed";
-  $("#player").hidden = !hasVideo;
+  $("#player").hidden = !hasVideo || done;
+  $("#cut").hidden = !(S.cut && S.step === "video");
+  drawCut();
   $("#controls").hidden = $("#timeline").hidden = !work;
   $("#panel").hidden = !(work && !S.panelOff);
   renderNotice();
@@ -285,13 +305,19 @@ function renderNotice() {
   };
   if (!p) {
     html = "";
+  } else if (S.step === "video" && S.cut) {
+    html = `<span>Drag the edges until only the picture you want is inside.</span>
+      <button class="btn primary" data-do="cropApply">Crop to this</button><button class="btn" data-do="cropCancel">Cancel</button>`;
   } else if (S.step === "video") {
+    const cropButton = isBusy() ? "" : p.state.crop
+      ? '<button class="btn" data-do="cropRemove" title="Go back to the picture as it was added">Remove the crop</button>'
+      : '<button class="btn" data-do="crop" title="Cut away black bars or edges before anything else happens">Crop the picture</button>';
     if (running("prepare")) html = spin("Getting the video ready: finding the shots and writing down what is said. You can play it meanwhile.");
     else if (p.prepared) {
       html = `<span>This video is ready${p.prep ? `: ${p.prep.shots} shots, ${p.prep.words} spoken words` : ""}.</span>`
-        + (p.ready ? "" : '<button class="btn primary" data-do="next">Next: Framing</button>');
-    } else if (failed("prepare")) html = oops("prepare");
-    else html = '<span>This video is not ready yet.</span><button class="btn primary" data-do="prepare">Get it ready</button>';
+        + cropButton + (p.ready ? "" : '<button class="btn primary" data-do="next">Next: Framing</button>');
+    } else if (failed("prepare")) html = oops("prepare") + cropButton;
+    else html = `<span>This video is not ready yet.</span>${cropButton}<button class="btn primary" data-do="prepare">Get it ready</button>`;
   } else if (S.step === "framing" && !p.ready) {
     if (running("log")) html = spin("Gemini is watching this video. It takes a few minutes; you can play it meanwhile.");
     else if (!S.settings.has_key) {
@@ -326,15 +352,21 @@ function renderControls() {
   const p = S.p, off = isBusy() ? "disabled" : "", edit = currentEdit();
   const check = (id, on, label, title) => `<label class="check" title="${title}">
     <input id="${id}" type="checkbox" ${on ? "checked" : ""}> ${label}</label>`;
+  const drop = (f) => `<button class="x" data-unformat="${esc(f)}" title="Stop making this format">&times;</button>`;
   const formats = p.state.formats.map((f) => (p.tracks[f]
-    ? `<button class="chip ${f === S.format ? "on" : ""}" data-format="${esc(f)}">${esc(f)}</button>`
-    : `<button class="chip off" title="As wide as the video: nothing to crop">${esc(f)}</button>`)).join("")
-    + '<button class="chip" data-format="+" title="Add a format">+</button>';
-  let html = `<span class="caption">Format</span><div class="chips">${formats}</div>`;
+    ? `<span class="chip ${f === S.format ? "on" : ""}" data-format="${esc(f)}" title="Show what this format keeps">${esc(formatName(f))}${drop(f)}</span>`
+    : `<span class="chip off" title="As wide as this video or wider: nothing to crop, so it is not made">${esc(formatName(f))}${drop(f)}</span>`)).join("");
+  const more = FORMATS.filter(([f]) => !p.state.formats.includes(f)).map(([f, name, where]) =>
+    `<option value="${f}">${name} ${f} (${where})</option>`).join("");
+  let html = `<span class="caption">Formats</span><div class="chips">${formats}</div>
+    <select id="addFormat" title="Add another format"><option value="">+ Add a format</option>${more}
+      <option value="custom">Another shape…</option></select>`;
   if (S.step === "framing") {
     html += check("allFormats", S.allFormats, "move all formats together", "A drag then moves the picture in every format, not only the one shown");
     if (p.state.skipped.length) html += check("skipPlay", S.skipPlay, "skip unticked shots", "Play the video without the shots you unticked");
     html += `<span class="grow"></span>
+      <button class="btn ghost" data-do="split" ${S.format ? "" : "disabled"}
+        title="Cut this shot in two at this moment, for the format shown, so each part can be framed on its own (S)">Split shot here</button>
       <button class="btn ghost" data-do="relog" ${off} title="Ask Gemini to watch the video again">Watch again</button>
       <button class="btn primary" data-do="render" ${off} title="Make a video in every format, leaving out unticked shots">Make the videos</button>`;
   } else if (edit) {
@@ -349,9 +381,11 @@ function renderControls() {
 
 function renderTimeline() {
   const p = S.p, edit = S.step === "edit" ? currentEdit() : null;
-  $("#shotRow").innerHTML = p.shots.map((s) => `<div data-shot="${s.id}" style="flex-grow:${s.end - s.start}"
-    class="${p.state.skipped.includes(s.id) ? "skipped" : ""} ${s.id === S.shot ? "now" : ""}"
-    title="${s.id}: ${esc(s.shows)}">${s.id}</div>`).join("");
+  const shows = Object.fromEntries(p.shots.map((s) => [s.id, s.shows]));
+  const parts = piecesNow().length ? piecesNow() : p.shots.map((s) => ({ ...s, shot: s.id, label: s.id }));
+  $("#shotRow").innerHTML = parts.map((x) => `<div data-shot="${x.shot}" style="flex-grow:${x.end - x.start}"
+    class="${p.state.skipped.includes(x.shot) ? "skipped" : ""} ${x.shot === S.shot ? "now" : ""}"
+    title="${x.label}: ${esc(shows[x.shot])}">${x.label}</div>`).join("");
   $("#soundRow").innerHTML = p.audio.map((a) => {
     const kept = edit ? (edit.keep.includes(a.id) ? "kept" : "dropped") : "";
     return `<div style="flex-grow:${a.end - a.start}" class="${a.kind === "other" ? "" : "speech"} ${kept}"
@@ -360,32 +394,39 @@ function renderTimeline() {
 }
 
 function renderPanel() {
-  const body = $("#panelBody"), at = body.scrollTop, main = S.step === "edit" ? "What is kept" : "Shots";
-  $("#tabs").innerHTML = `<button data-tab="main" class="${S.panelTab === "main" ? "on" : ""}">${main}</button>
-    <button data-tab="outputs" class="${S.panelTab === "outputs" ? "on" : ""}">Finished videos</button>`;
-  body.innerHTML = S.panelTab === "outputs" ? outputsHtml() : S.step === "edit" ? editHtml() : shotsHtml();
+  const body = $("#panelBody"), at = body.scrollTop;
+  $("#tabs").innerHTML = `<span>${S.step === "edit" ? "What is kept" : "Shots"}</span>
+    <button class="icon" data-do="panel" title="Hide this panel (Ctrl+Shift+B)">&times;</button>`;
+  body.innerHTML = S.step === "edit" ? editHtml() : shotsHtml();
   body.scrollTop = at;
 }
 
+const KIND = { dialogue_onscreen: "on screen", dialogue_offscreen: "off screen", voiceover: "voiceover" };
+
 function shotsHtml() {
-  const p = S.p;
+  const p = S.p, version = p.video_version;
   const names = Object.fromEntries(p.cast.map((c) => [c.id, c.ad_name || c.real_name || c.id]));
   const cast = p.cast.map((c) => `<div class="note"><span class="mono">${esc(c.id)}</span>
     ${esc([c.ad_name, c.real_name].filter(Boolean).join(" / "))} <span class="tag">${esc(c.description)}</span></div>`).join("");
   const shots = p.shots.map((s) => {
     const skipped = p.state.skipped.includes(s.id);
-    const said = p.audio.filter((a) => a.kind !== "other" && a.shots[0] === s.id).map((a) => a.heard).join(" ");
-    const moved = movedTo(s.id) != null
-      ? `<span class="tag good">picture moved</span><button class="btn small" data-reset="${s.id}">reset</button>` : "";
+    const said = p.audio.filter((a) => KIND[a.kind] && a.shots.includes(s.id)).map((a) => `<div class="said">
+      <a class="mono" data-seek="${Math.max(a.start, s.start)}" title="Go to this moment">${a.id}</a>
+      <span><span class="tag">${esc([names[a.speaker] || a.speaker, KIND[a.kind]].filter(Boolean).join(" · "))}${a.shots[0] === s.id ? "" : " · continued"}</span>
+        ${esc(a.heard)}</span></div>`).join("");
+    const mine = piecesNow().filter((x) => x.shot === s.id);
+    const parts = mine.length > 1 || mine.some((x) => x.moved) ? `<div class="parts">${mine.map((x, i) => `<span class="part">
+      <a class="mono" data-seek="${x.start}" title="Go to this part">${x.label}</a>
+      ${x.moved ? `<span class="tag good">moved</span><button class="btn small" data-reset="${esc(x.id)}" title="Put the picture back where it was">reset</button>` : ""}
+      ${i ? `<button class="btn small" data-join="${esc(x.id)}" title="Join this part to the one before it">join</button>` : ""}</span>`).join("")}</div>` : "";
     return `<div class="shot ${skipped ? "skipped" : ""} ${s.id === S.shot ? "now" : ""}" data-shot="${s.id}">
-      <input type="checkbox" data-skip="${s.id}" ${skipped ? "" : "checked"} title="Unticked shots are left out of the videos Fovea makes">
-      <img loading="lazy" alt="" src="${here(`/thumb/${s.id}.jpg`)}">
-      <div class="body">
-        <div class="head"><span class="mono">${s.id}</span><span class="tag">${clock(s.start)} · ${(s.end - s.start).toFixed(1)}s</span>
-          <span class="tag">${esc(s.cast.map((c) => names[c] || c).join(", "))}</span>${moved}</div>
-        <div class="shows">${esc(s.shows)}</div>
-        ${said ? `<div class="said">${esc(said)}</div>` : ""}
-      </div></div>`;
+      <div class="head">
+        <input type="checkbox" data-skip="${s.id}" ${skipped ? "" : "checked"} title="Unticked shots are left out of the videos Fovea makes">
+        <span class="mono id">${s.id}</span><span class="tag">${clock(s.start)} · ${(s.end - s.start).toFixed(1)}s</span>
+        <span class="grow"></span><span class="tag">${esc(s.cast.map((c) => names[c] || c).join(", "))}</span>
+      </div>
+      <div class="seen"><img loading="lazy" alt="" src="${here(`/thumb/${s.id}.jpg?v=${version}`)}"><div class="shows">${esc(s.shows)}</div></div>
+      ${said}${parts}</div>`;
   }).join("");
   return `<div class="note">${esc(p.summary)}</div><div class="section">Cast</div>${cast}
     <div class="section">Shots</div>${shots}`;
@@ -413,19 +454,63 @@ function editHtml() {
   return html;
 }
 
-// The finished videos of this step: the full-length ones under Framing, the shorter ones under Shorter version.
-function outputsHtml() {
-  const short = S.step === "edit";
-  const files = S.p.outputs.filter((o) => o.name.includes("_synced_") === short);
-  if (!files.length) {
-    return `<div class="note">No finished videos here yet. Press "${short ? "Make these videos" : "Make the videos"}".</div>`;
-  }
-  return files.map((o) => {
-    const url = here(`/outputs/${enc(o.name)}`);
-    return `<div class="output"><span class="name" title="${esc(o.name)}">${esc(o.name)}</span>
-      <span class="tag">${(o.size / 1e6).toFixed(1)} MB</span>
-      <a href="${url}" target="_blank" rel="noopener">Play</a><a href="${url}?download=1">Download</a></div>`;
-  }).join("");
+// Step 4: every video Fovea has made, in the main pane.
+function finishedHtml() {
+  const row = (o) => {
+    const url = here(`/outputs/${enc(o.name)}`), shape = (o.name.match(/_(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)\.mp4$/) || []);
+    return `<div class="output"><span class="what">${shape[1] ? esc(formatName(`${shape[1]}:${shape[2]}`)) : "The video's own shape"}</span>
+      <span class="name" title="${esc(o.name)}">${esc(o.name)}</span><span class="tag">${(o.size / 1e6).toFixed(1)} MB</span>
+      <a class="btn small" href="${url}" target="_blank" rel="noopener">Play</a>
+      <a class="btn small" href="${url}?download=1">Download</a></div>`;
+  };
+  const group = (title, files) => (files.length ? `<div class="section">${title}</div>${files.map(row).join("")}` : "");
+  const short = S.p.outputs.filter((o) => o.name.includes("_synced_"));
+  return group("Full length", S.p.outputs.filter((o) => !o.name.includes("_synced_"))) + group("Shorter versions", short);
+}
+
+// Step 1, cropping: the box that stays; everything outside it is cut away.
+function drawCut() {
+  const c = S.cut, box = $("#cutBox");
+  if (!c) return;
+  box.style.left = `${c.l * 100}%`;
+  box.style.top = `${c.t * 100}%`;
+  box.style.width = `${(c.r - c.l) * 100}%`;
+  box.style.height = `${(c.b - c.t) * 100}%`;
+}
+$("#cutBox").addEventListener("pointerdown", (e) => {
+  if (!e.target.dataset.edge || !S.cut) return;
+  e.target.setPointerCapture(e.pointerId);
+  e.preventDefault();
+});
+$("#cutBox").addEventListener("pointermove", (e) => {
+  const edge = e.target.dataset.edge, c = S.cut;
+  if (!edge || !c || !e.target.hasPointerCapture(e.pointerId)) return;
+  const box = frame.getBoundingClientRect();
+  const x = clamp((e.clientX - box.left) / box.width, 0, 1), y = clamp((e.clientY - box.top) / box.height, 0, 1);
+  if (edge === "l") c.l = Math.min(x, c.r - 0.2);
+  if (edge === "r") c.r = Math.max(x, c.l + 0.2);
+  if (edge === "t") c.t = Math.min(y, c.b - 0.2);
+  if (edge === "b") c.b = Math.max(y, c.t + 0.2);
+  drawCut();
+});
+async function startCut() {
+  video.pause();
+  S.cut = { l: 0, t: 0, r: 1, b: 1 };
+  renderAll();
+  try {
+    const bars = await api(here("/cropdetect"));       // black bars, when the video has them
+    if (bars && S.cut) {
+      S.cut = bars;
+      drawCut();
+    }
+  } catch (e) { /* start from the whole picture */ }
+}
+function applyCut() {
+  const c = S.cut;
+  if (c.l < 0.005 && c.t < 0.005 && c.r > 0.995 && c.b > 0.995) return toast("Drag an edge inwards first");
+  if (S.p.ready && !confirm("Cropping starts this video over: Gemini will have to watch it again, and changes you made are lost. Continue?")) return undefined;
+  S.cut = null;
+  return run("/crop", c);
 }
 
 // The video is fitted into the space it has, keeping its own shape; the crop window is drawn over it.
@@ -468,7 +553,7 @@ function tick() {
     document.querySelectorAll(".now").forEach((el) => el.classList.remove("now"));
     document.querySelectorAll(`[data-shot="${shot.id}"]`).forEach((el) => el.classList.add("now"));
     const card = document.querySelector(`.shot[data-shot="${shot.id}"]`);
-    if (card && !video.paused) card.scrollIntoView({ block: "nearest" });
+    if (card) card.scrollIntoView({ block: "center", behavior: "smooth" });   // the shot shown, in the middle of the panel
   }
   $("#clock").textContent = `${clock(t)} / ${clock(total)}   ${shot.id}`;
   const line = $("#timeline");
@@ -488,20 +573,34 @@ function tick() {
   crop.style.width = `${track.w * 100}%`;
   $("#dimLeft").style.width = `${left * 100}%`;
   $("#dimRight").style.width = `${Math.max(0, 1 - left - track.w) * 100}%`;
-  crop.classList.toggle("moved", movedTo(shot.id) != null);
+  const part = pieceAt(t);
+  $("#clock").textContent = `${clock(t)} / ${clock(total)}   ${part ? part.label : shot.id}`;
+  crop.classList.toggle("moved", !!(part && part.moved));
   return undefined;
 }
 requestAnimationFrame(tick);
 
 // =========================================================================== dragging the crop window
-// A drag holds the picture where it is dropped for the whole shot: in this format, or in all of them.
+// A drag holds the picture where it is dropped for the whole shot (or the part of it, once it has been
+// split): in this format, or in all of them.
+function splitHere() {
+  const t = Math.round((video.currentTime || 0) * 100) / 100, part = pieceAt(t);
+  if (!part) return toast("Choose a format first");
+  const splits = JSON.parse(JSON.stringify(S.p.state.splits));
+  splits[S.format] = splits[S.format] || {};
+  splits[S.format][part.shot] = [...(splits[S.format][part.shot] || []), t];
+  video.pause();
+  return saveState({ splits });
+}
 crop.addEventListener("pointerdown", (e) => {
   const track = working() && S.format ? S.p.tracks[S.format] : null;
   if (!track || !S.shot) return;
   video.pause();
   crop.setPointerCapture(e.pointerId);
   const left = parseFloat(crop.style.left) / 100 || 0;
-  S.drag = { x: e.clientX, from: left, left, w: track.w, shot: S.shot, far: false, saving: false };
+  const part = pieceAt(video.currentTime || 0);
+  if (!part) return;
+  S.drag = { x: e.clientX, from: left, left, w: track.w, part, far: false, saving: false };
 });
 crop.addEventListener("pointermove", (e) => {
   const d = S.drag;
@@ -519,9 +618,11 @@ crop.addEventListener("pointerup", async () => {
   }
   d.saving = true;
   const focus = JSON.parse(JSON.stringify(S.p.state.focus));
-  const key = S.allFormats ? "*" : S.format;
-  if (S.allFormats) Object.keys(focus).forEach((f) => { if (f !== "*") delete focus[f][d.shot]; });
-  focus[key] = { ...(focus[key] || {}), [d.shot]: Math.round((d.left + d.w / 2) * 100) };
+  // a shot that was split is split for this format only, so its parts are moved for this format only
+  const every = S.allFormats && piecesNow().filter((x) => x.shot === d.part.shot).length === 1;
+  const key = every ? "*" : S.format;
+  if (every) Object.keys(focus).forEach((f) => { if (f !== "*") delete focus[f][d.part.id]; });
+  focus[key] = { ...(focus[key] || {}), [d.part.id]: Math.round((d.left + d.w / 2) * 100) };
   await saveState({ focus });
   S.drag = null;
 });
@@ -572,8 +673,9 @@ function watchJob() {
     if (now.status === "running") return;
     clearInterval(S.poll);
     S.poll = null;
-    if (now.status === "done" && now.kind === "render") S.panelTab = "outputs";
+    const made = now.status === "done" && now.kind === "render";
     await refresh().catch((e) => toast(e.message));
+    if (made) setStep("done");
   }, 1500);
 }
 
@@ -594,6 +696,18 @@ function act(what) {
   if (what === "saveKey") {
     const key = $("#firstKey").value.trim();
     return key ? saveSettings({ gemini_key: key }) : toast("Paste your key first");
+  }
+  if (what === "panel") return togglePanel();
+  if (what === "split") return splitHere();
+  if (what === "crop") return startCut();
+  if (what === "cropApply") return applyCut();
+  if (what === "cropCancel") {
+    S.cut = null;
+    return renderAll();
+  }
+  if (what === "cropRemove") {
+    return confirm("Go back to the whole picture? This starts the video over: Gemini will have to watch it again.")
+      && run("/crop", { remove: true });
   }
   if (what === "prepare") return run("/prepare", {});
   if (what === "next") return setStep("framing");
@@ -694,25 +808,29 @@ $("#projects").onclick = async (e) => {
 };
 
 $("#controls").onclick = (e) => {
-  const chip = e.target.closest("[data-format]");
-  if (!chip) return;
-  if (chip.dataset.format === "+") {
-    const added = prompt("Add a format, as WIDTH:HEIGHT (for example 4:5)");
-    if (added) {
-      S.format = added.trim().toLowerCase().replace("x", ":");
-      saveState({ formats: [...S.p.state.formats, added.trim()] });
-    }
-    return;
+  const remove = e.target.closest("[data-unformat]"), chip = e.target.closest("[data-format]");
+  if (remove) {
+    const left = S.p.state.formats.filter((f) => f !== remove.dataset.unformat);
+    if (!left.length) return toast("Keep at least one format");
+    return saveState({ formats: left });
   }
+  if (!chip) return undefined;
   S.format = S.format === chip.dataset.format ? null : chip.dataset.format;   // a second click hides the window
-  renderControls();
-  if (S.panelTab === "main") renderPanel();
+  return renderAll();
 };
 $("#controls").onchange = (e) => {
   const id = e.target.id;
-  if (id !== "allFormats" && id !== "skipPlay" && id !== "keptPlay") return;
-  S[id] = e.target.checked;
-  computeSegs();
+  if (id === "addFormat") {
+    let added = e.target.value;
+    if (added === "custom") added = (prompt("The shape, as WIDTH:HEIGHT (for example 2:3)") || "").trim().toLowerCase().replace("x", ":");
+    e.target.value = "";
+    if (!added) return;
+    S.format = added;
+    saveState({ formats: [...S.p.state.formats, added] });
+  } else if (id === "allFormats" || id === "skipPlay" || id === "keptPlay") {
+    S[id] = e.target.checked;
+    computeSegs();
+  }
 };
 
 $("#play").onclick = () => (video.paused ? video.play() : video.pause());
@@ -730,21 +848,21 @@ $("#timeline").onclick = (e) => {
   video.currentTime = clamp((e.clientX - box.left) / box.width, 0, 1) * duration();
 };
 
-$("#tabs").onclick = (e) => {
-  if (!e.target.dataset.tab) return;
-  S.panelTab = e.target.dataset.tab;
-  renderPanel();
-};
-
 $("#panelBody").onclick = (e) => {
   const p = S.p, target = e.target;
   if (target.closest("[data-skip], [data-keep]")) return;          // handled when the box changes
   const reset = target.closest("[data-reset]"), seek = target.closest("[data-seek]"), pick = target.closest("[data-edit]");
-  const card = target.closest(".shot");
-  if (reset) {
-    const focus = JSON.parse(JSON.stringify(p.state.focus));
-    [S.format, "*"].forEach((f) => { if (focus[f]) delete focus[f][reset.dataset.reset]; });
-    saveState({ focus });
+  const card = target.closest(".shot"), join = target.closest("[data-join]");
+  if (reset || join) {
+    const id = (reset || join).dataset[reset ? "reset" : "join"], change = {};
+    change.focus = JSON.parse(JSON.stringify(p.state.focus));
+    [S.format, "*"].forEach((f) => { if (change.focus[f]) delete change.focus[f][id]; });
+    if (join) {                                       // "V04@5.20": the part of V04 that starts at 5.20
+      const [shot, at] = id.split("@");
+      change.splits = JSON.parse(JSON.stringify(p.state.splits));
+      change.splits[S.format][shot] = change.splits[S.format][shot].filter((t) => t.toFixed(2) !== at);
+    }
+    saveState(change);
   } else if (seek) {
     e.preventDefault();
     video.currentTime = parseFloat(seek.dataset.seek);
@@ -877,6 +995,8 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "Space") {
     e.preventDefault();
     $("#play").click();
+  } else if (e.code === "KeyS" && S.step === "framing" && working() && !e.ctrlKey && !e.metaKey) {
+    splitHere();
   } else if (working() && (e.code === "ArrowRight" || e.code === "ArrowLeft")) {
     const shots = S.p.shots, i = shots.indexOf(shotAt(video.currentTime || 0));
     const to = shots[clamp(i + (e.code === "ArrowRight" ? 1 : -1), 0, shots.length - 1)];
