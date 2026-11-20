@@ -51,7 +51,7 @@ IDLE_MINUTES = float(os.environ.get("FOVEA_IDLE_MINUTES", "10"))     # until the
 DATA = Settings().data_dir
 LOCAL = Path(os.environ.get("FOVEA_LOCAL", HERE / ".local"))   # this computer's settings (the Gemini key); not in git
 STATIC = {"/": "index.html", "/app.js": "app.js", "/style.css": "style.css", "/sw.js": "sw.js",
-          "/icon.png": "icon.png"}
+          "/icon.png": "icon.png", "/favicon.png": "favicon.png", "/favicon.ico": "icon.ico"}
 
 JOBS: Dict[str, Dict[str, Any]] = {}         # project -> the job running (or last run) for it
 UPDATE: Dict[str, Any] = {"status": "idle", "lines": [], "error": ""}     # the Update button
