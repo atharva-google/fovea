@@ -11,9 +11,8 @@
   <div id="app">
     <aside id="sidebar">
       <div class="side-head">
-        <img class="logo" src="/icon.png" alt="">
-        <span class="brand">Fovea</span>
-        <button id="collapse" class="icon" title="Hide or show the list of videos">&#9776;</button>
+        <button id="home" title="Back to the start screen"><img class="logo" src="/icon.png" alt=""><span class="brand">Fovea</span></button>
+        <button id="collapse" class="icon" title="Hide or show the list of videos (Ctrl+B)">&#9776;</button>
       </div>
       <button id="new" class="btn primary wide" title="Add a video"><span class="glyph">+</span><span class="label">Add a video</span></button>
       <input id="file" type="file" accept="video/*" hidden>
@@ -24,6 +23,7 @@
 
     <main id="main">
       <header id="top"></header>
+      <nav id="steps" class="seg" hidden></nav>
       <section id="stage">
         <div id="empty"></div>
         <div id="frame" hidden>
@@ -31,7 +31,7 @@
           <div id="dimLeft" class="dim"></div>
           <div id="dimRight" class="dim"></div>
           <div id="crop" title="Drag to move the picture for this shot"></div>
-          <div id="noplay" hidden>Your browser cannot play this file directly.<br>The picture appears here once Fovea has prepared the video.</div>
+          <div id="noplay" hidden>Your browser cannot play this file directly.<br>The picture appears here once the video is ready.</div>
         </div>
       </section>
       <div id="notice" hidden></div>
@@ -41,33 +41,16 @@
         <span id="clock" class="mono">0:00.0</span>
         <button id="mute" class="btn ghost" title="Turn the sound on or off">Sound on</button>
       </section>
-      <section id="controls" hidden>
-        <span class="caption">Format</span>
-        <div id="formats" class="chips"></div>
-        <label class="check" title="A drag then moves the picture in every format, not only the one shown">
-          <input id="allFormats" type="checkbox"> move all formats together
-        </label>
-        <label class="pick">Play
-          <select id="mode">
-            <option value="original">the whole video</option>
-            <option value="selected">ticked shots only</option>
-            <option value="edit">the edit</option>
-          </select>
-        </label>
-      </section>
       <section id="timeline" hidden>
         <div id="shotRow" class="row"></div>
-        <div id="soundRow" class="row thin"></div>
+        <div id="soundRow" class="row"></div>
         <div id="playhead"></div>
       </section>
+      <section id="controls" hidden></section>
     </main>
 
     <aside id="panel" hidden>
-      <nav id="tabs">
-        <button data-tab="shots">Shots</button>
-        <button data-tab="edit">Shorter version</button>
-        <button data-tab="outputs">Finished videos</button>
-      </nav>
+      <nav id="tabs"></nav>
       <div id="panelBody"></div>
     </aside>
   </div>
@@ -79,23 +62,39 @@
   <dialog id="settings">
     <form method="dialog">
       <h2>Settings</h2>
-      <label>Gemini API key
-        <input id="key" type="password" autocomplete="off" placeholder="paste a key to set or replace it">
-      </label>
-      <p id="keyNote" class="hint"></p>
-      <label>How hard Gemini thinks when it watches a video
-        <select id="thinking"></select>
-      </label>
-      <p class="hint">Lower is faster. "low" is a good start.</p>
-      <label>Go to sleep after this many idle minutes
-        <input id="idle" type="number" min="1" max="240" step="1">
-      </label>
-      <p class="hint">Fovea stops running when you close this page or leave it untouched this long. It never stops in the middle of a job.</p>
+      <nav id="settingsNav" class="seg">
+        <button type="button" data-pane="general" class="on">General</button>
+        <button type="button" data-pane="shortcuts">Shortcuts</button>
+      </nav>
+      <div id="paneGeneral">
+        <label>Gemini API key
+          <input id="key" type="password" autocomplete="off" placeholder="paste a key to set or replace it">
+        </label>
+        <p class="hint"><span id="keyNote"></span> <button type="button" id="removeKey" class="btn small">Remove the key</button></p>
+        <label>How hard Gemini thinks when it watches a video
+          <select id="thinking"></select>
+        </label>
+        <p class="hint">Lower is faster. "low" is a good start.</p>
+        <label>Go to sleep after this many idle minutes
+          <input id="idle" type="number" min="1" max="240" step="1">
+        </label>
+        <p class="hint">Fovea stops running when you close this page or leave it untouched this long. It never stops in the middle of a job.</p>
+      </div>
+      <div id="paneShortcuts" hidden>
+        <div class="keys">
+          <kbd>Space</kbd><span>Play or pause</span>
+          <kbd>&larr;</kbd><span>Previous shot</span>
+          <kbd>&rarr;</kbd><span>Next shot</span>
+          <kbd>Ctrl + B</kbd><span>Show or hide the list of videos (left)</span>
+          <kbd>Ctrl + Shift + B</kbd><span>Show or hide the details (right)</span>
+        </div>
+        <p class="hint">On a Mac, &#8984; works in place of Ctrl.</p>
+      </div>
       <div class="actions">
         <span id="version" class="tag"></span>
-        <button class="btn ghost" value="update" title="Get the latest version of Fovea. Your videos and key are kept.">Update Fovea</button>
-        <span style="flex:1"></span>
-        <button class="btn ghost" value="cancel">Cancel</button>
+        <button type="button" id="updateBtn" class="btn ghost" title="Get the latest version of Fovea. Your videos and key are kept.">Update Fovea</button>
+        <span class="grow"></span>
+        <button type="button" id="cancelSettings" class="btn ghost">Cancel</button>
         <button class="btn primary" value="save">Save</button>
       </div>
     </form>

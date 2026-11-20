@@ -33,7 +33,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-from fovea import analysis, framing, media  # noqa: E402
+from fovea import analysis, framing, media, shots as shot_files, transcript  # noqa: E402
 from fovea import edit as editor  # noqa: E402
 from fovea import render as renderer  # noqa: E402
 from fovea.config import THINKING_LEVELS, Settings  # noqa: E402
@@ -145,8 +145,17 @@ def describe(job: Job) -> Dict[str, Any]:
            "outputs": sorted(({"name": f.name, "size": f.stat().st_size, "time": f.stat().st_mtime}
                               for f in (job.root / "outputs").glob("*.mp4")), key=lambda f: -f["time"])
            if (job.root / "outputs").is_dir() else []}
+    # step 1 (on this computer): the shots are found and what is said is written down
+    shots_csv, words_csv = job.root / "prep" / "shots.csv", job.root / "audio" / "transcript.csv"
+    out["prepared"], out["prep"] = shots_csv.is_file() and words_csv.is_file(), None
+    if out["prepared"]:
+        try:
+            out["prep"] = {"shots": len(shot_files.read_csv(shots_csv)), "words": len(transcript.read_csv(words_csv))}
+        except (OSError, ValueError, KeyError):
+            out["prepared"] = False
     stored = analysis.load(job) if out["info"] else None
     out["ready"] = bool(stored)
+    out["prepared"] = out["prepared"] or bool(stored)
     if not stored:
         return out
     info, state, log = out["info"], out["state"], stored["log"]
@@ -197,6 +206,24 @@ def start(pid: str, kind: str, work: Callable[[Callable[[str], None]], None]) ->
             job["status"] = "error"
 
     threading.Thread(target=run, daemon=True).start()
+
+
+def run_prepare(job: Job) -> Callable[[Callable[[str], None]], None]:
+    """Step 1, all on this computer: read the video, find its shots, write down what is said. No Gemini."""
+    def work(log: Callable[[str], None]) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        from fovea import pipeline
+
+        settings = Settings()
+        info = media.probe(job.source)
+        write_json(job.video_info, info)
+        log(f"  {info['width']}x{info['height']} @ {info['fps']:g} fps, {info['duration']:.1f}s")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            words = pool.submit(pipeline._transcript, job, settings, info["has_audio"], log)
+            found = pool.submit(pipeline._shots, job, settings, info["fps"], log)
+            words.result(), found.result()
+    return work
 
 
 def run_log(job: Job, refresh: bool) -> Callable[[Callable[[str], None]], None]:
@@ -397,6 +424,9 @@ class Handler(BaseHTTPRequestHandler):
                 raise Problem(400, str(e) or "That could not be saved") from None
             write_json(job.root / "frontend.json", state)
             return self.send_json(describe(job))
+        if method == "POST" and rest == "prepare":
+            start(pid, "prepare", run_prepare(job))
+            return self.send_json(describe(job))
         if method == "POST" and rest == "log":
             start(pid, "log", run_log(job, bool(self.read_json().get("refresh"))))
             return self.send_json(describe(job))
@@ -430,8 +460,8 @@ class Handler(BaseHTTPRequestHandler):
                              "thinking_levels": list(THINKING_LEVELS)}}
 
     def upload(self, name: str) -> None:
-        """A new project. It exists (and its video plays) as soon as the file has arrived; Fovea starts
-        watching it at once when there is a Gemini key."""
+        """A new project. It exists (and its video plays) as soon as the file has arrived, and step 1
+        starts by itself."""
         name = Path(name).name
         if not Path(name).stem or name.startswith("."):
             raise Problem(400, "The file needs a name")
@@ -459,8 +489,7 @@ class Handler(BaseHTTPRequestHandler):
             write_json(job.video_info, media.probe(job.source))
         except Exception as e:  # noqa: BLE001 - the page says why when the video is watched
             print(f"Could not read {name}: {e}")
-        if gemini_key():
-            start(pid, "log", run_log(job, refresh=False))
+        start(pid, "prepare", run_prepare(job))        # Gemini is only ever asked when the user presses a button
         self.send_json({"id": pid})
 
     def keep(self, job: Job, name: str, keep: Any) -> None:
