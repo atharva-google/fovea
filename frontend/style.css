@@ -169,7 +169,10 @@ select:focus, input:focus, .btn:focus-visible { outline: 1px solid var(--accent)
 #mute { min-width: 84px; }
 #seek { flex: 1; min-width: 0; height: 16px; cursor: pointer; }
 #clock { color: var(--text-2); min-width: 168px; text-align: right; white-space: pre; }
-#controls { flex-wrap: wrap; padding: 4px 16px 16px; }
+#controls { display: block; padding: 4px 16px 16px; }
+.ctl { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-height: 32px; }
+.ctl + .ctl { margin-top: 8px; }
+#addFormat { width: 150px; flex: none; }
 #seconds { width: 72px; }
 #timeline { position: relative; padding: 4px 16px 12px; cursor: pointer; user-select: none; flex: none; }
 .row { display: flex; height: 22px; gap: 1px; }

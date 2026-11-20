@@ -362,9 +362,10 @@ function renderControls() {
     : `<span class="chip off" title="As wide as this video or wider: nothing to crop, so it is not made">${esc(formatName(f))}${drop(f)}</span>`)).join("");
   const more = FORMATS.filter(([f]) => !p.state.formats.includes(f)).map(([f, name, where]) =>
     `<option value="${f}">${name} ${f} (${where})</option>`).join("");
-  let html = `<span class="caption">Formats</span><div class="chips">${formats}</div>
+  // two rows that keep their order whatever the width: the formats, then this step's options and buttons
+  let html = `<div class="ctl"><span class="caption">Formats</span><div class="chips">${formats}</div>
     <select id="addFormat" title="Add another format"><option value="">+ Add a format</option>${more}
-      <option value="custom">Another shape…</option></select>`;
+      <option value="custom">Another shape…</option></select></div><div class="ctl">`;
   if (S.step === "framing") {
     html += check("allFormats", S.allFormats, "move all formats together", "A drag then moves the picture in every format, not only the one shown");
     if (p.state.skipped.length) html += check("skipPlay", S.skipPlay, "skip unticked shots", "Play the video without the shots you unticked");
@@ -380,7 +381,7 @@ function renderControls() {
       <button class="btn primary" data-do="renderEdit" ${off || (edit.keep.length ? "" : "disabled")}
         title="Make this shorter version as a video in every format">Make these videos</button>`;
   }
-  $("#controls").innerHTML = html;
+  $("#controls").innerHTML = `${html}</div>`;
 }
 
 function renderTimeline() {
@@ -461,11 +462,13 @@ function editHtml() {
 // Step 4: every video Fovea has made, in the main pane.
 function finishedHtml() {
   const row = (o) => {
-    const url = here(`/outputs/${enc(o.name)}`), shape = (o.name.match(/_(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)\.mp4$/) || []);
+    // the address changes whenever the file is made again, so the browser never plays an old copy
+    const url = here(`/outputs/${enc(o.name)}?v=${Math.round(o.time)}`), shape = (o.name.match(/_(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)\.mp4$/) || []);
+    const old = o.time < S.p.video_version ? '<span class="tag warn" title="Make the videos again to get the cropped picture">made before the crop</span>' : "";
     return `<div class="output"><span class="what">${shape[1] ? esc(formatName(`${shape[1]}:${shape[2]}`)) : "The video's own shape"}</span>
-      <span class="name" title="${esc(o.name)}">${esc(o.name)}</span><span class="tag">${(o.size / 1e6).toFixed(1)} MB</span>
+      <span class="name" title="${esc(o.name)}">${esc(o.name)}</span>${old}<span class="tag">${(o.size / 1e6).toFixed(1)} MB</span>
       <a class="btn small" href="${url}" target="_blank" rel="noopener">Play</a>
-      <a class="btn small" href="${url}?download=1">Download</a></div>`;
+      <a class="btn small" href="${url}&download=1">Download</a></div>`;
   };
   const group = (title, files) => (files.length ? `<div class="section">${title}</div>${files.map(row).join("")}` : "");
   const short = S.p.outputs.filter((o) => o.name.includes("_synced_"));
