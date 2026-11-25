@@ -373,10 +373,11 @@ function renderControls() {
     : "Ask Gemini to watch the video again"}">${p.rewatch ? "&#9888;&#65039; " : ""}Watch again</button>
       <button class="btn primary" data-do="render" ${off} title="Make a video in every format, leaving out unticked shots">Make the videos</button>`;
   } else if (edit) {
-    html += check("keptPlay", S.keptPlay, "play only what is kept", "Play the shorter version, not the whole video");
     const versions = p.edits.map((e) => `<span class="chip ${e.name === S.edit ? "on" : ""}" data-edit="${esc(e.name)}"
       title="Show this version">${esc(e.label)}<button class="x" data-unedit="${esc(e.name)}" title="Remove this version">&times;</button></span>`).join("");
+    // a row of its own, above this step's options: every version made so far
     html = html.replace(/<div class="ctl">$/, `<div class="ctl"><span class="caption">Versions</span><div class="chips">${versions}</div></div><div class="ctl">`);
+    html += check("keptPlay", S.keptPlay, "play only what is kept", "Play the shorter version, not the whole video");
     html += `<span class="grow"></span>${secondsHtml(edit.target)}<span class="caption">seconds</span>
       <button class="btn ghost" id="another" data-do="edit" ${off}
         title="Gemini chooses again, from the ticked shots only. It is added as a new version; the ones you have are kept.">Make a ${edit.target}s version</button>
