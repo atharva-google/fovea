@@ -390,6 +390,11 @@ def run_render(job: Job, edit_name: Optional[str]) -> Callable[[Callable[[str], 
             segments, tag = (None, "") if len(kept) == len(stored["video"]) else (stretches(kept), "_trim")
         if segments is not None and not segments:
             raise RuntimeError("Nothing is selected, so there is nothing to render")
+        # Every render is kept: the first has no number, the next ones are _r2, _r3, ...
+        mine = re.compile(re.escape(job.source.stem + tag) + r"(?:_r(\d+))?(?:_[\d.]+x[\d.]+)?\.mp4")
+        runs = [int(m[1] or 1) for f in (job.root / "outputs").glob("*.mp4") if (m := mine.fullmatch(f.name))]
+        if runs:
+            tag += f"_r{max(runs) + 1}"
         groups: Dict[str, List[str]] = {}          # formats that share one focus line are made in one ffmpeg run
         for fmt in state["formats"]:
             groups.setdefault(json.dumps(framed(stored, state, fmt)), []).append(fmt)
@@ -553,6 +558,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_file(self.thumb(job, t[1]))
         if method == "GET" and (o := re.fullmatch(r"outputs/([^/]+\.mp4)", rest)):
             return self.send_file(job.root / "outputs" / o[1], download="download" in query)
+        if method == "DELETE" and (o := re.fullmatch(r"outputs/([^/]+\.mp4)", rest)):
+            if JOBS.get(pid, {}).get("status") == "running":
+                raise Problem(409, "This project is still busy; wait for it to finish")
+            if not (job.root / "outputs" / o[1]).is_file():
+                raise Problem(404, "Not found")
+            (job.root / "outputs" / o[1]).unlink()
+            return self.send_json(describe(job))
         if method == "POST" and rest == "state":
             body, state = self.read_json(), page_state(job)
             try:
@@ -621,7 +633,7 @@ class Handler(BaseHTTPRequestHandler):
             if not job.edit_json(e[1]).is_file():
                 raise Problem(404, "No such version")
             job.edit_json(e[1]).unlink()
-            made = re.compile(re.escape(f"{job.source.stem}_{e[1]}") + r"(_[\d.]+x[\d.]+)?\.mp4")
+            made = re.compile(re.escape(f"{job.source.stem}_{e[1]}") + r"(_r\d+)?(_[\d.]+x[\d.]+)?\.mp4")
             for f in (job.root / "outputs").glob("*.mp4"):          # and the videos made from exactly this version
                 if made.fullmatch(f.name):
                     f.unlink()

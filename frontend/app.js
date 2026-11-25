@@ -469,16 +469,18 @@ function finishedHtml() {
     return `<div class="output"><span class="what">${shape[1] ? esc(formatName(`${shape[1]}:${shape[2]}`)) : "The video's own shape"}</span>
       <span class="name" title="${esc(o.name)}">${esc(o.name)}</span>${old}<span class="tag">${(o.size / 1e6).toFixed(1)} MB</span>
       <a class="btn small" href="${url}" target="_blank" rel="noopener">Play</a>
-      <a class="btn small" href="${url}&download=1">Download</a></div>`;
+      <a class="btn small" href="${url}&download=1">Download</a>
+      <button class="icon" data-unoutput="${esc(o.name)}" title="Delete this video">&times;</button></div>`;
   };
-  const group = (title, files) => (files.length ? `<div class="section">${title}</div>${files.map(row).join("")}` : "");
-  const versions = {};                                 // one group per shorter version: "15s", "15s · 2", ...
+  // one group per render, newest first: nothing made earlier is replaced
+  const stem = S.p.name.replace(/\.[^.]*$/, ""), groups = new Map();
   for (const o of S.p.outputs) {
-    const m = o.name.match(/_synced_([\d.]+)s(?:_v(\d+))?(?:_[\d.]+x[\d.]+)?\.mp4$/);
-    if (m) (versions[`${m[1]}s${m[2] ? ` · ${m[2]}` : ""}`] ||= []).push(o);
+    const m = o.name.slice(stem.length).match(/^(_trim)?(?:_synced_([\d.]+)s(?:_v(\d+))?)?(?:_r(\d+))?(?:_[\d.]+x[\d.]+)?\.mp4$/) || [];
+    const what = m[2] ? `Shorter version ${m[2]}s${m[3] ? ` · ${m[3]}` : ""}` : `Full length${m[1] ? ", without the unticked shots" : ""}`;
+    const title = `${what}${m[4] ? `, made again (${m[4]})` : ""}`;
+    groups.set(title, [...(groups.get(title) || []), o]);
   }
-  return group("Full length", S.p.outputs.filter((o) => !o.name.includes("_synced_")))
-    + Object.keys(versions).map((label) => group(`Shorter version ${label}`, versions[label])).join("");
+  return [...groups].map(([title, files]) => `<div class="section">${esc(title)}</div>${files.map(row).join("")}`).join("");
 }
 
 // Step 1, cropping: the box that stays; everything outside it is cut away.
@@ -922,6 +924,12 @@ $("#panelBody").onchange = async (e) => {
       toast(err.message);
     }
   }
+};
+
+$("#finished").onclick = (e) => {
+  const gone = e.target.closest("[data-unoutput]");
+  if (!gone || !confirm(`Delete ${gone.dataset.unoutput}?`)) return;
+  api(here(`/outputs/${enc(gone.dataset.unoutput)}`), { method: "DELETE" }).then(setProject, (err) => toast(err.message));
 };
 
 $("#progress").onclick = (e) => {
