@@ -963,6 +963,9 @@ function openSettings() {
   $("#thinking").innerHTML = (S.settings.thinking_levels || []).map((level) =>
     `<option ${level === S.settings.thinking ? "selected" : ""}>${esc(level)}</option>`).join("");
   $("#idle").value = Math.round(S.settings.idle_minutes || 10);
+  $("#model").innerHTML = (S.settings.models || []).map((m) =>
+    `<option value="${esc(m.id)}" ${m.id === S.settings.gemini_model ? "selected" : ""}>${esc(m.name)}</option>`).join("");
+  $("#fps").value = S.settings.gemini_fps || 4;
   $("#version").textContent = S.settings.version ? `version ${S.settings.version}` : "";
   showPane("general");
   $("#settings").returnValue = "";
@@ -1018,7 +1021,8 @@ async function updateFovea() {
 $("#settings").addEventListener("close", () => {
   if ($("#settings").returnValue === "update") return updateFovea();
   if ($("#settings").returnValue !== "save") return undefined;
-  const body = { thinking: $("#thinking").value };
+  const body = { thinking: $("#thinking").value, gemini_model: $("#model").value };
+  if (parseFloat($("#fps").value) > 0) body.gemini_fps = parseFloat($("#fps").value);
   if (parseFloat($("#idle").value) >= 1) body.idle_minutes = parseFloat($("#idle").value);
   if ($("#key").value.trim()) body.gemini_key = $("#key").value.trim();
   return saveSettings(body);

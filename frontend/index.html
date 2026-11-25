@@ -78,10 +78,17 @@
           <input id="key" type="password" autocomplete="off" placeholder="paste a key to set or replace it">
         </label>
         <p class="hint"><span id="keyNote"></span> <button type="button" id="removeKey" class="btn small">Remove the key</button></p>
+        <label>Gemini model
+          <select id="model"></select>
+        </label>
         <label>How hard Gemini thinks when it watches a video
           <select id="thinking"></select>
         </label>
         <p class="hint">Lower is faster. "low" is a good start.</p>
+        <label>Frames per second Gemini looks at
+          <input id="fps" type="number" min="0.5" max="24" step="0.5">
+        </label>
+        <p class="hint">More frames catch short shots and who is speaking, but take longer and cost more. 4 is a good start.</p>
         <label>Go to sleep after this many idle minutes
           <input id="idle" type="number" min="1" max="240" step="1">
         </label>

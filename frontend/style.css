@@ -239,7 +239,7 @@ select:focus, input:focus, .btn:focus-visible { outline: 1px solid var(--accent)
 }
 #drop { position: fixed; inset: 0; background: rgba(14, 15, 17, 0.85); z-index: 8; display: flex; align-items: center; justify-content: center; pointer-events: none; }
 #drop div { border: 2px dashed var(--accent); border-radius: 16px; padding: 48px 64px; font-size: 18px; color: var(--accent-soft); }
-dialog { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 12px; padding: 24px; width: min(440px, 92vw); }
+dialog { max-height: 92vh; overflow-y: auto; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 12px; padding: 24px; width: min(440px, 92vw); }
 dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
 dialog label { display: flex; flex-direction: column; gap: 8px; color: var(--text-2); margin-top: 12px; }
 #settingsNav { justify-content: flex-start; margin-bottom: 4px; }

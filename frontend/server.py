@@ -59,6 +59,15 @@ LOCK = threading.Lock()
 last_seen = time.time()                      # when the page last asked for anything
 
 
+# The Gemini models offered in Settings: (the id sent to Gemini, the name shown).
+MODELS = [
+    ("gemini-3.8-flash", "Gemini 3.8 Flash"), ("gemini-3.7-flash", "Gemini 3.7 Flash"),
+    ("gemini-3.6-flash", "Gemini 3.6 Flash"), ("gemini-3.5-flash", "Gemini 3.5 Flash"),
+    ("gemini-4-argon", "Gemini 4 Argon"), ("gemini-4-carbon", "Gemini 4 Carbon"),
+    ("gemini-4-hydrogen", "Gemini 4 Hydrogen"), ("gemini-4-neon", "Gemini 4 Neon"),
+]
+
+
 class Problem(Exception):
     """Something to tell the page, with an HTTP status."""
 
@@ -77,8 +86,14 @@ def local_settings() -> Dict[str, Any]:
         idle = min(240.0, max(0.1, float(stored["idle_minutes"])))
     except (KeyError, TypeError, ValueError):
         idle = IDLE_MINUTES
+    model = stored.get("gemini_model")
+    try:
+        fps = min(24.0, max(0.5, float(stored["gemini_fps"])))
+    except (KeyError, TypeError, ValueError):
+        fps = Settings().gemini_fps
     return {"gemini_key": str(stored.get("gemini_key") or ""), "thinking": stored.get("thinking") or "low",
-            "idle_minutes": idle}
+            "idle_minutes": idle, "gemini_fps": fps,
+            "gemini_model": model if model in dict(MODELS) else Settings().gemini_model}
 
 
 def gemini_key() -> Optional[str]:
@@ -366,8 +381,9 @@ def run_log(job: Job, refresh: bool) -> Callable[[Callable[[str], None]], None]:
         from fovea import pipeline
 
         try:
-            pipeline.analyze(job.source, Settings(thinking=local_settings()["thinking"], refresh=refresh),
-                             gemini_key(), log)
+            chosen = local_settings()
+            pipeline.analyze(job.source, Settings(thinking=chosen["thinking"], gemini_model=chosen["gemini_model"],
+                                                  gemini_fps=chosen["gemini_fps"], refresh=refresh), gemini_key(), log)
         except analysis.KeyRequired:
             raise RuntimeError("Fovea needs a Gemini key to watch the video.") from None
         state = page_state(job)                       # Gemini has now seen the picture as it is cropped today
@@ -423,9 +439,10 @@ def run_edit(job: Job, seconds: float) -> Callable[[Callable[[str], None]], None
         ids = {u.id for u in [*video, *audio]}
         described = {**stored["log"], "video_units": [u for u in stored["log"]["video_units"] if u["id"] in ids],
                      "audio_units": [u for u in stored["log"]["audio_units"] if u["id"] in ids]}
+        model = local_settings()["gemini_model"]
         log(f"▶ edit (synced, about {seconds:g}s{f', without {len(skipped)} unchecked shots' if skipped else ''})")
         raw, took = gemini.ask(editor.build_prompt(audio, video, described, seconds), gemini_key(),
-                               settings.gemini_model, settings.gemini_api_version, schema="Edit", log=log)
+                               model, settings.gemini_api_version, schema="Edit", log=log)
         edit, issues = editor.clean(raw, audio, described)
         if not edit["keep"]:
             raise RuntimeError("Gemini's edit keeps nothing; try again")
@@ -436,7 +453,7 @@ def run_edit(job: Job, seconds: float) -> Callable[[Callable[[str], None]], None
             name = f"{editor.name(seconds)}_v{n}"
         write_json(job.edit_json(name), {
             "made": time.time(), "fingerprint": job.fingerprint, "version": [UNITS_VERSION, analysis.ANALYSIS_VERSION, editor.EDIT_VERSION],
-            "target": seconds, "model": settings.gemini_model, "thinking": settings.thinking, "took": took,
+            "target": seconds, "model": model, "thinking": settings.thinking, "took": took,
             "issues": issues, "skipped": sorted(skipped), **edit})
         log(f"  {edit['seconds']:.1f}s in {len(edit['segments'])} stretches")
     return work
@@ -515,6 +532,13 @@ class Handler(BaseHTTPRequestHandler):
                 current["gemini_key"] = str(body["gemini_key"] or "").strip()
             if body.get("thinking") in THINKING_LEVELS:
                 current["thinking"] = body["thinking"]
+            if body.get("gemini_model") in dict(MODELS):
+                current["gemini_model"] = body["gemini_model"]
+            if "gemini_fps" in body:
+                try:
+                    current["gemini_fps"] = min(24.0, max(0.5, float(body["gemini_fps"])))
+                except (TypeError, ValueError):
+                    raise Problem(400, "Give the frames per second as a number") from None
             if "idle_minutes" in body:
                 try:
                     current["idle_minutes"] = min(240.0, max(1.0, float(body["idle_minutes"])))
@@ -650,6 +674,8 @@ class Handler(BaseHTTPRequestHandler):
         return {"projects": [summary_of(Job(d)) for d in folders],
                 "settings": {"has_key": bool(gemini_key()), "thinking": settings["thinking"],
                              "idle_minutes": settings["idle_minutes"], "version": VERSION,
+                             "gemini_model": settings["gemini_model"], "gemini_fps": settings["gemini_fps"],
+                             "models": [{"id": i, "name": n} for i, n in MODELS],
                              "thinking_levels": list(THINKING_LEVELS)}}
 
     def upload(self, name: str) -> None:
