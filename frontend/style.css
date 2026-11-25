@@ -176,10 +176,12 @@ select:focus, input:focus, .btn:focus-visible { outline: 1px solid var(--accent)
 #addFormat { width: 150px; flex: none; }
 #seconds { width: 72px; }
 #timeline { position: relative; padding: 4px 16px 12px; cursor: pointer; user-select: none; flex: none; }
-.row { display: flex; height: 22px; gap: 1px; }
+/* every block is EXACTLY its share of the time (nothing reserved for labels, no gaps that add up), so the
+   blocks, the sounds under them and the playhead all agree */
+.row { display: flex; height: 22px; }
 .row + .row { margin-top: 4px; }
-.row > div { min-width: 0; background: var(--raised); border-radius: 2px; overflow: hidden; }
-#shotRow > div { font-family: var(--mono); font-size: 10px; color: var(--text-3); padding: 3px; white-space: nowrap; }
+.row > div { flex-basis: 0; min-width: 0; background: var(--raised); overflow: hidden; box-shadow: inset -1px 0 0 var(--bg); }
+#shotRow > div { font-family: var(--mono); font-size: 10px; color: var(--text-3); padding: 3px 0; text-indent: 3px; white-space: nowrap; }
 #shotRow > div.now { background: var(--accent-wash); color: var(--accent-soft); }
 #shotRow > div.skipped { background: repeating-linear-gradient(135deg, var(--panel) 0 5px, var(--raised) 5px 10px); text-decoration: line-through; }
 #soundRow > div.speech { background: #3A3F47; }

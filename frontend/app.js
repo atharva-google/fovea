@@ -374,8 +374,12 @@ function renderControls() {
       <button class="btn primary" data-do="render" ${off} title="Make a video in every format, leaving out unticked shots">Make the videos</button>`;
   } else if (edit) {
     html += check("keptPlay", S.keptPlay, "play only what is kept", "Play the shorter version, not the whole video");
+    const versions = p.edits.map((e) => `<span class="chip ${e.name === S.edit ? "on" : ""}" data-edit="${esc(e.name)}"
+      title="Show this version">${esc(e.label)}<button class="x" data-unedit="${esc(e.name)}" title="Remove this version">&times;</button></span>`).join("");
+    html = html.replace(/<div class="ctl">$/, `<div class="ctl"><span class="caption">Versions</span><div class="chips">${versions}</div></div><div class="ctl">`);
     html += `<span class="grow"></span>${secondsHtml(edit.target)}<span class="caption">seconds</span>
-      <button class="btn ghost" data-do="edit" ${off} title="Ask Gemini to choose again, for this length">Redo</button>
+      <button class="btn ghost" id="another" data-do="edit" ${off}
+        title="Gemini chooses again, from the ticked shots only. It is added as a new version; the ones you have are kept.">Make a ${edit.target}s version</button>
       <button class="btn primary" data-do="renderEdit" ${off || (edit.keep.length ? "" : "disabled")}
         title="Make this shorter version as a video in every format">Make these videos</button>`;
   }
@@ -440,10 +444,9 @@ function editHtml() {
   if (!edit) return '<div class="note">No shorter version yet.</div>';
   const why = Object.fromEntries(edit.must_keep.map((m) => [m.id, m.why]));
   const gone = new Set(p.state.skipped);
-  let html = p.edits.length > 1 ? `<div class="chips" style="padding:4px">${p.edits.map((e) => `<button
-    class="chip ${e.name === S.edit ? "on" : ""}" data-edit="${esc(e.name)}">${e.target}s</button>`).join("")}</div>` : "";
-  html += `<div class="note">${esc(edit.story)}</div>
-    <div class="line"><span class="mono">${edit.seconds.toFixed(1)}s</span><span class="tag">aiming for about ${edit.target}s</span></div>`;
+  let html = `<div class="note">${esc(edit.story)}</div>
+    <div class="line"><span class="mono">${edit.seconds.toFixed(1)}s</span><span class="tag">version ${esc(edit.label)}, aiming for about ${edit.target}s</span></div>`;
+  if (edit.skipped.length) html += `<div class="tag" style="padding:2px 4px">Gemini chose without ${esc(edit.skipped.join(", "))}</div>`;
   html += edit.issues.map((i) => `<div class="tag warn" style="padding:2px 4px">${esc(i)}</div>`).join("");
   html += '<div class="section">Tick to keep, untick to drop</div>';
   html += p.audio.map((a) => {
@@ -469,8 +472,13 @@ function finishedHtml() {
       <a class="btn small" href="${url}&download=1">Download</a></div>`;
   };
   const group = (title, files) => (files.length ? `<div class="section">${title}</div>${files.map(row).join("")}` : "");
-  const short = S.p.outputs.filter((o) => o.name.includes("_synced_"));
-  return group("Full length", S.p.outputs.filter((o) => !o.name.includes("_synced_"))) + group("Shorter versions", short);
+  const versions = {};                                 // one group per shorter version: "15s", "15s · 2", ...
+  for (const o of S.p.outputs) {
+    const m = o.name.match(/_synced_([\d.]+)s(?:_v(\d+))?(?:_[\d.]+x[\d.]+)?\.mp4$/);
+    if (m) (versions[`${m[1]}s${m[2] ? ` · ${m[2]}` : ""}`] ||= []).push(o);
+  }
+  return group("Full length", S.p.outputs.filter((o) => !o.name.includes("_synced_")))
+    + Object.keys(versions).map((label) => group(`Shorter version ${label}`, versions[label])).join("");
 }
 
 // Step 1, cropping: the box that stays; everything outside it is cut away.
@@ -682,9 +690,14 @@ function watchJob() {
     if (now.status === "running") return;
     clearInterval(S.poll);
     S.poll = null;
-    const made = now.status === "done" && now.kind === "render";
+    const made = now.status === "done" && now.kind === "render", chosen = now.status === "done" && now.kind === "edit";
     await refresh().catch((e) => toast(e.message));
     if (made) setStep("done");
+    if (chosen && S.p && S.p.edits.length) {           // show the version that has just been made
+      S.edit = S.wantEdit = [...S.p.edits].sort((a, b) => a.made - b.made).pop().name;
+      computeSegs();
+      renderAll();
+    }
   }, 1500);
 }
 
@@ -730,7 +743,6 @@ function act(what) {
     const seconds = parseFloat($("#seconds").value);
     if (!(seconds >= 1)) return toast("Give a length in seconds");
     if (!S.settings.has_key) return openSettings();
-    S.wantEdit = `synced_${seconds}s`;
     return run("/edit", { seconds });
   }
   return undefined;
@@ -817,6 +829,17 @@ $("#projects").onclick = async (e) => {
 
 $("#controls").onclick = (e) => {
   const remove = e.target.closest("[data-unformat]"), chip = e.target.closest("[data-format]");
+  const unedit = e.target.closest("[data-unedit]"), version = e.target.closest("[data-edit]");
+  if (unedit) {
+    const gone = S.p.edits.find((x) => x.name === unedit.dataset.unedit);
+    if (!confirm(`Remove version ${gone.label}, and the videos made from it?`)) return undefined;
+    return api(here(`/edits/${enc(gone.name)}`), { method: "DELETE" }).then(setProject, (err) => toast(err.message));
+  }
+  if (version) {
+    S.edit = S.wantEdit = version.dataset.edit;
+    computeSegs();
+    return renderAll();
+  }
   if (remove) {
     const left = S.p.state.formats.filter((f) => f !== remove.dataset.unformat);
     if (!left.length) return toast("Keep at least one format");
@@ -825,6 +848,9 @@ $("#controls").onclick = (e) => {
   if (!chip) return undefined;
   S.format = S.format === chip.dataset.format ? null : chip.dataset.format;   // a second click hides the window
   return renderAll();
+};
+$("#controls").oninput = (e) => {                     // the button says what it will make
+  if (e.target.id === "seconds" && $("#another")) $("#another").textContent = `Make a ${parseFloat(e.target.value) || "?"}s version`;
 };
 $("#controls").onchange = (e) => {
   const id = e.target.id;
@@ -859,7 +885,7 @@ $("#timeline").onclick = (e) => {
 $("#panelBody").onclick = (e) => {
   const p = S.p, target = e.target;
   if (target.closest("[data-skip], [data-keep]")) return;          // handled when the box changes
-  const reset = target.closest("[data-reset]"), seek = target.closest("[data-seek]"), pick = target.closest("[data-edit]");
+  const reset = target.closest("[data-reset]"), seek = target.closest("[data-seek]");
   const card = target.closest(".shot"), join = target.closest("[data-join]");
   if (reset || join) {
     const id = (reset || join).dataset[reset ? "reset" : "join"], change = {};
@@ -874,10 +900,6 @@ $("#panelBody").onclick = (e) => {
   } else if (seek) {
     e.preventDefault();
     video.currentTime = parseFloat(seek.dataset.seek);
-  } else if (pick) {
-    S.edit = S.wantEdit = pick.dataset.edit;
-    computeSegs();
-    renderAll();
   } else if (card) {
     video.currentTime = p.shots.find((s) => s.id === card.dataset.shot).start + 0.001;
   }

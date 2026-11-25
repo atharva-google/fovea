@@ -211,13 +211,17 @@ def describe(job: Job) -> Dict[str, Any]:
         out["tracks"][fmt] = {"w": crop_w / width, "pieces": [[a, b, x0 / width, x1 / width] for a, b, x0, x1 in
                                                               framing.crop_track(shots, width, crop_w, Settings().dead_zone)]}
     out["edits"] = []
-    for f in sorted((job.root / "edit").glob("edit_*.json")) if (job.root / "edit").is_dir() else []:
+    for f in (job.root / "edit").glob("edit_*.json") if (job.root / "edit").is_dir() else []:
         try:
-            e = read_json(f)
-            out["edits"].append({"name": f.stem[len("edit_"):], **{k: e[k] for k in
-                                 ("target", "seconds", "story", "must_keep", "keep", "segments", "issues")}})
+            e, name = read_json(f), f.stem[len("edit_"):]
+            again = re.search(r"_v(\d+)$", name)                    # the 2nd, 3rd ... version of the same length
+            out["edits"].append({"name": name, "label": f"{e['target']:g}s" + (f" · {again[1]}" if again else ""),
+                                 "made": e.get("made") or f.stat().st_mtime, "skipped": e.get("skipped") or [],
+                                 **{k: e[k] for k in ("target", "seconds", "story", "must_keep", "keep", "segments",
+                                                      "issues")}})
         except (OSError, ValueError, KeyError):
             pass
+    out["edits"].sort(key=lambda e: (e["target"], e["made"]))
     return out
 
 
@@ -420,8 +424,13 @@ def run_edit(job: Job, seconds: float) -> Callable[[Callable[[str], None]], None
         edit, issues = editor.clean(raw, audio, described)
         if not edit["keep"]:
             raise RuntimeError("Gemini's edit keeps nothing; try again")
-        write_json(job.edit_json(editor.name(seconds)), {
-            "fingerprint": job.fingerprint, "version": [UNITS_VERSION, analysis.ANALYSIS_VERSION, editor.EDIT_VERSION],
+        # Every run is a new version; nothing made before is replaced: synced_15s, synced_15s_v2, ...
+        name, n = editor.name(seconds), 1
+        while job.edit_json(name).is_file():
+            n += 1
+            name = f"{editor.name(seconds)}_v{n}"
+        write_json(job.edit_json(name), {
+            "made": time.time(), "fingerprint": job.fingerprint, "version": [UNITS_VERSION, analysis.ANALYSIS_VERSION, editor.EDIT_VERSION],
             "target": seconds, "model": settings.gemini_model, "thinking": settings.thinking, "took": took,
             "issues": issues, "skipped": sorted(skipped), **edit})
         log(f"  {edit['seconds']:.1f}s in {len(edit['segments'])} stretches")
@@ -605,6 +614,17 @@ class Handler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 raise Problem(400, "Give a length in seconds") from None
             start(pid, "edit", run_edit(job, seconds))
+            return self.send_json(describe(job))
+        if method == "DELETE" and (e := re.fullmatch(r"edits/([\w.]+)", rest)):
+            if JOBS.get(pid, {}).get("status") == "running":
+                raise Problem(409, "This project is still busy; wait for it to finish")
+            if not job.edit_json(e[1]).is_file():
+                raise Problem(404, "No such version")
+            job.edit_json(e[1]).unlink()
+            made = re.compile(re.escape(f"{job.source.stem}_{e[1]}") + r"(_[\d.]+x[\d.]+)?\.mp4")
+            for f in (job.root / "outputs").glob("*.mp4"):          # and the videos made from exactly this version
+                if made.fullmatch(f.name):
+                    f.unlink()
             return self.send_json(describe(job))
         if method == "POST" and (e := re.fullmatch(r"edits/([\w.]+)", rest)):
             return self.keep(job, e[1], self.read_json().get("keep"))
