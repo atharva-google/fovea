@@ -32,11 +32,14 @@ def parse_format(text: str) -> Tuple[str, float]:
 
 def render(job: Job, video_units: Sequence[Any], framing: Dict[str, Any], info: Dict[str, Any],
            formats: Sequence[str] = DEFAULT_FORMATS, dead_zone: float = 3.0, crf: int = 18,
-           log: Callable[[str], None] = print, segments: Optional[Sequence[Span]] = None, tag: str = "") -> List[Path]:
+           log: Callable[[str], None] = print, segments: Optional[Sequence[Span]] = None, tag: str = "",
+           crossfade: float = 0.06) -> List[Path]:
     """One file per format that is narrower than the video. Returns the files written.
 
     ``segments`` = ``[(start_s, end_s)]``: only these parts of the video, back to back (an edit). The
-    edit is then also written in the video's own shape. ``tag`` goes into the file names."""
+    edit is then also written in the video's own shape. ``tag`` goes into the file names.
+    ``crossfade``: seconds over which the sound of one part is blended into the next at every cut
+    (0 = hard cuts). The blend is centred on the cut, so sound and picture stay together."""
     width, height, fps = int(info["width"]), int(info["height"]) // 2 * 2, float(info["fps"])
     points = {s["id"]: s["points"] for s in framing["shots"]}
     shots = [{"start": v.start, "end": v.end, "points": points[v.id]} for v in video_units]
@@ -63,9 +66,20 @@ def render(job: Job, video_units: Sequence[Any], framing: Dict[str, Any], info: 
     graph += [f"[s{i}]{','.join(f for f in (crop, pick) if f) or 'null'}[o{i}]" for i, (_, _, crop) in enumerate(jobs)]
     sound = ["0:a?"] * n
     if spans and info.get("has_audio"):
-        graph += [f"[0:a]atrim=start={a:.4f}:end={b:.4f},asetpts=PTS-STARTPTS[t{k}]" for k, (a, b) in enumerate(spans)]
-        graph.append("".join(f"[t{k}]" for k in range(len(spans))) + f"concat=n={len(spans)}:v=0:a=1,asplit={n}"
-                     + "".join(f"[a{i}]" for i in range(n)))
+        # Each part takes half a crossfade more sound on the sides where it meets another part; blending
+        # the two overlaps away again leaves the sound exactly as long as the picture.
+        half, end, last = max(0.0, crossfade) / 2, float(info.get("duration") or spans[-1][1]), len(spans) - 1
+        pre = [0.0 if k == 0 else min(half, a) for k, (a, _) in enumerate(spans)]
+        post = [0.0 if k == last else min(half, max(0.0, end - b)) for k, (_, b) in enumerate(spans)]
+        graph += [f"[0:a]atrim=start={a - pre[k]:.4f}:end={b + post[k]:.4f},asetpts=PTS-STARTPTS[t{k}]"
+                  for k, (a, b) in enumerate(spans)]
+        joined = "[t0]"
+        for k in range(1, len(spans)):
+            overlap = post[k - 1] + pre[k]
+            how = f"acrossfade=d={overlap:.4f}:c1=tri:c2=tri" if overlap > 0.002 else "concat=n=2:v=0:a=1"
+            graph.append(f"{joined}[t{k}]{how}[x{k}]")
+            joined = f"[x{k}]"
+        graph.append(f"{joined}asplit={n}" + "".join(f"[a{i}]" for i in range(n)))
         sound = [f"[a{i}]" for i in range(n)]
     cmd = ["ffmpeg", "-y", "-v", "error", "-i", str(job.source), "-filter_complex", ";".join(graph)]
     for i, (path, _, _) in enumerate(jobs):

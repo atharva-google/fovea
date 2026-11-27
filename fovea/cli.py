@@ -50,6 +50,9 @@ def main(argv=None) -> None:
     e = sub.add_parser("edit", parents=[common, shapes],
                        help="A shorter version, chosen by Gemini from the log and rendered in every shape")
     e.add_argument("--seconds", type=float, required=True, help="About how long the short version should be")
+    e.add_argument("--crossfade", type=float, default=d.crossfade,
+                   help="Seconds of sound blended at every cut (default: %(default)g; 0 = hard cuts, and the "
+                        "files are then named ..._hardcuts so both can be compared)")
     args = parser.parse_args(argv)
 
     from . import analysis, edit, gemini, pipeline
@@ -57,7 +60,8 @@ def main(argv=None) -> None:
     settings = Settings(gemini_model=args.gemini_model, gemini_fps=args.gemini_fps, thinking=args.thinking,
                         agentic=args.agentic, whisper_model=args.whisper_model, whisper_device=args.whisper_device,
                         language=args.language, refresh=args.refresh, force=args.force,
-                        dead_zone=getattr(args, "dead_zone", d.dead_zone))
+                        dead_zone=getattr(args, "dead_zone", d.dead_zone),
+                        crossfade=getattr(args, "crossfade", d.crossfade))
     key = args.gemini_key or os.environ.get("GEMINI_API_KEY")
     try:
         if args.command in ("log", "analyze"):

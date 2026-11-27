@@ -73,7 +73,8 @@ def edit(video: str | Path, seconds: float, formats: Sequence[str] = renderer.DE
     log("▶ render")
     files = renderer.render(job, result["video"], result["framing"], read_json(job.video_info), formats,
                             settings.dead_zone, settings.crf, log, segments=chosen["segments"],
-                            tag=f"_{editor.name(seconds)}")
+                            tag=f"_{editor.name(seconds)}{'' if settings.crossfade > 0 else '_hardcuts'}",
+                            crossfade=settings.crossfade)
     return {**result, "edit": chosen, "files": files}
 
 

@@ -30,6 +30,21 @@ class Kind(str, Enum):
     other = "other"
 
 
+class Music(str, Enum):
+    none = "none"
+    score = "score"
+    song = "song"
+
+
+class MusicPart(str, Enum):
+    none = "none"
+    intro = "intro"
+    build = "build"
+    peak = "peak"
+    breakdown = "break"
+    outro = "outro"
+
+
 class AudioUnit(BaseModel):
     id: str = Field(description="The id exactly as listed, e.g. A05 or A05b.")
     time_range: str = Field(description="Its time range, copied exactly as listed, e.g. '1.80-4.36s'. Everything "
@@ -45,6 +60,19 @@ class AudioUnit(BaseModel):
     speaker: str = Field(description="Cast id of who says it, decided for this unit on its own: by whose mouth "
                                      "moves, or by the voice when no mouth is seen. '' when nothing is spoken or "
                                      "the voice is not a cast member.")
+    with_music: bool = Field(description="True ONLY when these words cannot be moved apart from the music: they "
+                                          "are sung or lip-synced by someone seen, or deliberately timed to its "
+                                          "beat. False for ordinary speech with music under it, and when nothing "
+                                          "is said.")
+    music: Music = Field(description="The music under this stretch. none: no music. score: instrumental music. "
+                                     "song: a track with singing, also in the stretches between its sung lines.")
+    music_part: MusicPart = Field(description="Which part of the track this stretch belongs to. intro: it starts "
+                                              "up. build: tension or energy rises. peak: the high point (a chorus, "
+                                              "a drop, the payoff). break: it thins out or pauses. outro: it winds "
+                                              "down or ends. none when there is no music. Neighbouring units in "
+                                              "the same part get the same value.")
+    sfx: str = Field(description="A sound made by something that is SEEN in this stretch, in a few words: 'wrapper "
+                                 "torn', 'door slams', 'bottle opens'. Not music, not a voice. '' if there is none.")
     focus_x: int = Field(description="Centre of the cropped picture during this stretch, as a percentage of the "
                                      "frame width (0 = left edge, 100 = right edge): the centre of ONE person or "
                                      "thing, never the space between two. In order of priority: 1) the action or "

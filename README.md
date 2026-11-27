@@ -49,6 +49,21 @@ stored as `edit/edit_synced_15s.json` and rendered in the video's own shape and 
 (`outputs/<video name>_synced_15s.mp4`, `..._synced_15s_9x16.mp4`, ...). `--refresh` asks for the
 edit again; the log is kept.
 
+## Music (experiment, branch `feat/music`)
+
+Gemini is the only model. When it watches the video it also notes, for every audio unit, the music
+under it (`none`, `score`, `song`), which part of the track that is (`intro`, `build`, `peak`,
+`break`, `outro`), words that cannot be moved apart from the music (`with_music`), and sounds made by
+something seen (`sfx`). The edit uses this:
+
+- Gemini is told to cut where there is no music or where one part of the track ends and the next begins.
+- A sung line, or words timed to the music, is kept whole (code adds the rest of the line).
+- Every cut is judged and printed: `no music`, `between music parts`, or `inside the music`.
+- The sound is blended over 60 ms at every cut. `--crossfade 0` makes hard cuts and names the files
+  `..._hardcuts`, so both can be listened to side by side.
+
+The beat itself is not analysed, so a cut between parts can still be off the beat.
+
 ## What happens
 
 ```

@@ -38,6 +38,7 @@ class Settings:
 
     # ---- rendering
     dead_zone: float = 3.0                 # a move of the focus line smaller than this (% of the width) is not followed
+    crossfade: float = 0.06                # seconds of sound blended at every cut of a shorter version (0 = hard cuts)
     crf: int = 18                          # x264 quality of the rendered videos (lower = better, bigger)
 
     # ---- re-running

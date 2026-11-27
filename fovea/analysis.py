@@ -29,9 +29,11 @@ from .framing import position_at
 from .job import Job, read_json, write_json
 from .units import UNITS_VERSION, AudioUnit, VideoUnit, cut_units, slots
 
-ANALYSIS_VERSION = 4   # bump when the prompt or schema changes in a way that makes stored answers stale
+ANALYSIS_VERSION = 5   # bump when the prompt or schema changes in a way that makes stored answers stale
 KINDS = ("dialogue_onscreen", "dialogue_offscreen", "voiceover", "lyrics", "other")
 TALK = "dialogue_onscreen"
+MUSIC = ("none", "score", "song")
+MUSIC_PARTS = ("none", "intro", "build", "peak", "break", "outro")
 
 PROMPT = """You are a senior video editor logging the footage of an ad before it is cut down and reframed.
 Watch and listen to the whole video carefully. Later steps work from your log WITHOUT seeing the video,
@@ -55,6 +57,13 @@ LOOKING AND LISTENING
 - With several people in a shot, check hands and mouths separately. One person often speaks while another
   does the thing that matters, and two people can say one line each within the same shot: for every audio
   unit, decide afresh whose mouth is moving and whether the voice has changed.
+
+SOUND
+The ad will also be cut shorter, and every cut is heard. So for EVERY audio unit, also when someone speaks:
+- Say whether music plays under it and which part of the track that is. Music runs across many units: give
+  neighbouring units in the same part the same label, and change the label exactly where the music changes.
+- Note a sound made by something that is seen (a wrapper torn, a door, a bottle opened) on the unit where
+  it is heard.
 
 REFRAMING
 The video will be cropped to a narrow picture that uses the full height and only moves left and right. For a
@@ -234,8 +243,14 @@ def clean(raw: Dict[str, Any], audio: List[AudioUnit], video: List[VideoUnit]
             x = last_x.get(s["shot"], 50)
             issues.append(f"{s['id']} has no focus position: {x}% is used")
         last_x[s["shot"]] = x
+        music = str(g.get("music") or "").strip()
+        music = music if music in MUSIC else "none"
+        part = str(g.get("music_part") or "").strip()
         row = {**s, "kind": kind, "speaker": speaker, "x": x,
-               "heard": str(g.get("heard") or "").strip(), "needs": needs(a.id, g.get("needs"))}
+               "heard": str(g.get("heard") or "").strip(), "needs": needs(a.id, g.get("needs")),
+               "music": music, "music_part": part if part in MUSIC_PARTS and music != "none" else "none",
+               "with_music": g.get("with_music") is True and kind != "other",
+               "sfx": str(g.get("sfx") or "").strip()}
         rows.append(row)
         first.setdefault(a.id, row)
 
@@ -245,6 +260,8 @@ def clean(raw: Dict[str, Any], audio: List[AudioUnit], video: List[VideoUnit]
         head = parts[0]
         audio_out.append({"id": a.id, "heard": head["heard"] or (a.text if a.kind == "speech" else "(silence)"),
                           "kind": head["kind"], "speaker": head["speaker"], "needs": head["needs"],
+                          "with_music": any(r["with_music"] for r in parts), "music": head["music"],
+                          "music_part": head["music_part"], "sfx": next((r["sfx"] for r in parts if r["sfx"]), ""),
                           "parts": [{"id": r["id"], "shot": r["shot"], "kind": r["kind"]} for r in parts]})
 
     shots_out = [{"id": v.id, "points": _points(v, [r for r in rows if r["shot"] == v.id])} for v in video]
@@ -308,6 +325,18 @@ def load(job: Job) -> Optional[Dict[str, Any]]:
 
 
 # =========================================================================== for people
+def sound_tags(unit: Dict[str, Any], before: str = " | ", after: str = "") -> str:
+    """What is heard in a unit besides its words, as short text ("" when there is nothing to say)."""
+    tags = []
+    if unit.get("music", "none") != "none":
+        tags.append(f"music: {unit['music']}/{unit.get('music_part', 'none')}")
+    if unit.get("with_music"):
+        tags.append("timed to the music")
+    if unit.get("sfx"):
+        tags.append(f"sound: {unit['sfx']}")
+    return "".join(f"{before}{t}{after}" for t in tags)
+
+
 def report(result: Dict[str, Any]) -> str:
     audio, video, described = result["audio"], result["video"], result["log"]
     dv = {u["id"]: u for u in described["video_units"]}
@@ -340,5 +369,5 @@ def report(result: Dict[str, Any]) -> str:
             heard = "(continued)" if s["part"] else f"{who}{a['heard']}"
             need = f"  needs {' '.join(a['needs'])}" if a["needs"] and not s["part"] else ""
             lines.append(f"    {s['id']:<5} {s['start']:6.2f}-{s['end']:6.2f}s  focus {focus}  "
-                         f"{kind_of[s['id']]:<18} {heard}{need}")
+                         f"{kind_of[s['id']]:<18} {heard}{need}{'' if s['part'] else sound_tags(a, '  [', ']')}")
     return "\n".join(lines)
