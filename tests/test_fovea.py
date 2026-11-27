@@ -144,7 +144,7 @@ class AnalysisTest(unittest.TestCase):
                          ["cast", "id", "needs", "objects", "setting", "shows", "text"])
         self.assertEqual(described["audio_units"][7],
                          {"id": "A08", "heard": "A sweater.", "kind": TALK, "speaker": "P2", "needs": ["A02"],
-                          "with_music": False, "music": "none", "music_part": "none", "sfx": "",
+                          "music_part": "none", "sfx": "",
                           "parts": [{"id": "A08", "shot": "V02", "kind": TALK}]})
         thanks = described["audio_units"][10]                   # one line: seen being said, then heard over V03
         self.assertEqual((thanks["heard"], thanks["speaker"]), ("Thank you.", "P1"))
@@ -177,21 +177,23 @@ class AnalysisTest(unittest.TestCase):
     def test_music_and_sounds_are_kept_per_unit_and_nonsense_is_dropped(self):
         raw = answer(self.audio, self.video)
         by_id = {s["id"]: s for v in raw["video_units"] for s in v["audio"]}
-        by_id["A03"].update(music="score", music_part="build", sfx="box opens")
-        by_id["A05"].update(music="jazz", music_part="peak", with_music=True)           # no such music; nothing is said
-        by_id["A06"].update(music="song", music_part="chorus", with_music=True)
+        by_id["A03"].update(music_part="build", sfx="box opens")
+        by_id["A05"].update(music_part="chorus")                                        # no such part
+        by_id["A06"].update(music_part="peak", kind="lyrics_onscreen")
         by_id["A11b"].update(sfx="paper rustles")
         described, _, issues = analysis.clean(raw, self.audio, self.video)
-        got = {u["id"]: (u["music"], u["music_part"], u["with_music"], u["sfx"]) for u in described["audio_units"]}
-        self.assertEqual(got["A03"], ("score", "build", False, "box opens"))
-        self.assertEqual(got["A05"], ("none", "none", False, ""))
-        self.assertEqual(got["A06"], ("song", "none", True, ""))
-        self.assertEqual(got["A11"], ("none", "none", False, "paper rustles"))
+        got = {u["id"]: (u["kind"], u["music_part"], u["sfx"]) for u in described["audio_units"]}
+        self.assertEqual(got["A03"], (OTHER, "build", "box opens"))
+        self.assertEqual(got["A05"], (OTHER, "none", ""))
+        self.assertEqual(got["A06"], ("lyrics_onscreen", "peak", ""))
+        self.assertEqual(got["A11"], (TALK, "none", "paper rustles"))
         self.assertEqual(issues, [])
         result = {"audio": self.audio, "video": self.video, "log": described,
                   "framing": analysis.clean(raw, self.audio, self.video)[1]}
-        self.assertIn("(silence)  [music: score/build]  [sound: box opens]", analysis.report(result))
-        self.assertIn("SOUND\nThe ad will also be cut shorter", analysis.build_prompt(self.audio, self.video))
+        self.assertIn("(silence)  [music: build]  [sound: box opens]", analysis.report(result))
+        text = analysis.build_prompt(self.audio, self.video)
+        self.assertIn("the same music_part", text)
+        self.assertLess(len(text.split("THE UNITS")[0].splitlines()), 26)                # the prompt stays short
 
     def test_a_unit_described_under_the_wrong_time_range_is_reported(self):
         raw = answer(self.audio, self.video)
@@ -329,16 +331,15 @@ class EditTest(unittest.TestCase):
 
     def with_music(self):
         """The example with a score that builds (A03-A05), peaks (A06, A07) and a sung line (A09, A10)."""
-        tags = {"A03": ("score", "build"), "A04": ("score", "build"), "A05": ("score", "build"),
-                "A06": ("score", "peak"), "A07": ("score", "peak"), "A09": ("song", "peak"), "A10": ("song", "peak")}
-        units = [{**u, "music": tags.get(u["id"], ("none", "none"))[0], "music_part": tags.get(u["id"], ("none", "none"))[1],
-                  "kind": "lyrics" if u["id"] in ("A09", "A10") else u["kind"],
+        parts = {"A03": "build", "A04": "build", "A05": "build", "A06": "peak", "A07": "peak", "A09": "peak", "A10": "peak"}
+        units = [{**u, "music_part": parts.get(u["id"], "none"),
+                  "kind": "lyrics_offscreen" if u["id"] in ("A09", "A10") else u["kind"],
                   "sfx": "box opens" if u["id"] == "A05" else ""} for u in self.log["audio_units"]]
         return {**self.log, "audio_units": units}
 
     def test_the_edit_prompt_shows_the_music_and_the_sounds(self):
         text = edit.build_prompt(self.audio, self.video, self.with_music(), 6)
-        self.assertIn("    A05 | 0.84s | other | (silence) | music: score/build | sound: box opens", text)
+        self.assertIn("    A05 | 0.84s | other | (silence) | music: build | sound: box opens", text)
         self.assertIn("    A02 | 1.72s | dialogue_onscreen | P1: I hope it's shoes.\n", text)       # no music: no tag
         self.assertIn("If you keep a build, keep the peak it leads to.", text)
 
@@ -352,7 +353,7 @@ class EditTest(unittest.TestCase):
         self.assertEqual(got["cuts"], [])
         text = edit.report({**got, "target": 6}, self.audio, log)
         self.assertIn("CUTS: 0, of which 0 inside the music", text)
-        self.assertIn("(silence)  [music: score/build]  [sound: box opens]", text)
+        self.assertIn("(silence)  [music: build]  [sound: box opens]", text)
 
     def test_a_sung_line_is_kept_whole_and_a_cut_between_music_parts_is_fine(self):
         got, issues = edit.clean(self.raw("A05", "A09", must=()), self.audio, self.with_music())

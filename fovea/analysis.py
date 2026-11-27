@@ -30,46 +30,32 @@ from .job import Job, read_json, write_json
 from .units import UNITS_VERSION, AudioUnit, VideoUnit, cut_units, slots
 
 ANALYSIS_VERSION = 5   # bump when the prompt or schema changes in a way that makes stored answers stale
-KINDS = ("dialogue_onscreen", "dialogue_offscreen", "voiceover", "lyrics", "other")
+KINDS = ("dialogue_onscreen", "dialogue_offscreen", "voiceover", "lyrics_onscreen", "lyrics_offscreen", "other")
 TALK = "dialogue_onscreen"
-MUSIC = ("none", "score", "song")
 MUSIC_PARTS = ("none", "intro", "build", "peak", "break", "outro")
 
-PROMPT = """You are a senior video editor logging the footage of an ad before it is cut down and reframed.
-Watch and listen to the whole video carefully. Later steps work from your log WITHOUT seeing the video,
-so everything they need to know has to be in it.
+PROMPT = """You are a senior video editor logging an ad before it is reframed and cut shorter. Later steps work
+from your log WITHOUT the video, so everything they need has to be in it.
 
 UNITS
-The video has already been cut into units with exact times, listed at the end (seconds from the start):
+The video is already cut into units with exact times, listed at the end:
   video units  one per shot (V01, V02, ...)
-  audio units  listed under the shot they play over (A01, A02, ...): a few spoken words, or up to a second of
-               the sound between words. A sound that runs on into the next shot appears again there, marked
-               (continued).
-Describe every unit, in the order listed. For each one, first copy its id and time range exactly as listed,
-then look at and listen to THAT stretch of the video, and nothing else. Everywhere else, refer to units by
-their id and never by time.
-The rough transcript comes from speech-to-text and can have wrong words, miss sounds or invent words.
-Trust what you hear.
+  audio units  under the shot they play over (A01, A02, ...): a few spoken words, or up to a second of the
+               sound between words. One that runs on into the next shot is listed again there, marked (continued).
+Describe every unit in the order listed. Copy its id and time range first, then judge THAT stretch only.
+Elsewhere, refer to units by id and never by time. The rough transcript comes from speech-to-text and can
+be wrong: trust what you hear.
 
-LOOKING AND LISTENING
-- Judge every shot by its own frames. A shot shorter than a second is often a close-up of an object or a
-  silent reaction: never carry people or actions over from the shot before it.
-- With several people in a shot, check hands and mouths separately. One person often speaks while another
-  does the thing that matters, and two people can say one line each within the same shot: for every audio
-  unit, decide afresh whose mouth is moving and whether the voice has changed.
-
-SOUND
-The ad will also be cut shorter, and every cut is heard. So for EVERY audio unit, also when someone speaks:
-- Say whether music plays under it and which part of the track that is. Music runs across many units: give
-  neighbouring units in the same part the same label, and change the label exactly where the music changes.
-- Note a sound made by something that is seen (a wrapper torn, a door, a bottle opened) on the unit where
-  it is heard.
-
-REFRAMING
-The video will be cropped to a narrow picture that uses the full height and only moves left and right. For a
-vertical video it is only about ONE THIRD of the frame's width; whatever is outside it is never seen.
-focus_x says where that picture is centred while each sound plays. It follows what must be SEEN, which is not
-always the person who is heard.
+RULES
+- Judge every shot by its own frames. A shot under a second is often a close-up of an object or a silent
+  reaction: never carry people or actions over from the shot before it.
+- With several people in a shot, check hands and mouths separately: the one who speaks is often not the one
+  who acts, and two people can each say a line. Decide the speaker afresh for every audio unit.
+- Music runs across many units. Give neighbouring units in the same part of the track the same music_part,
+  and change it exactly where the music changes.
+- The picture will be cropped to a window that only moves left and right; for a vertical video it is about
+  ONE THIRD of the frame's width, and what is outside it is never seen. focus_x follows what must be SEEN,
+  which is not always who is heard.
 {fields}
 THE UNITS
 {table}
@@ -243,13 +229,10 @@ def clean(raw: Dict[str, Any], audio: List[AudioUnit], video: List[VideoUnit]
             x = last_x.get(s["shot"], 50)
             issues.append(f"{s['id']} has no focus position: {x}% is used")
         last_x[s["shot"]] = x
-        music = str(g.get("music") or "").strip()
-        music = music if music in MUSIC else "none"
         part = str(g.get("music_part") or "").strip()
         row = {**s, "kind": kind, "speaker": speaker, "x": x,
                "heard": str(g.get("heard") or "").strip(), "needs": needs(a.id, g.get("needs")),
-               "music": music, "music_part": part if part in MUSIC_PARTS and music != "none" else "none",
-               "with_music": g.get("with_music") is True and kind != "other",
+               "music_part": part if part in MUSIC_PARTS else "none",
                "sfx": str(g.get("sfx") or "").strip()}
         rows.append(row)
         first.setdefault(a.id, row)
@@ -260,7 +243,6 @@ def clean(raw: Dict[str, Any], audio: List[AudioUnit], video: List[VideoUnit]
         head = parts[0]
         audio_out.append({"id": a.id, "heard": head["heard"] or (a.text if a.kind == "speech" else "(silence)"),
                           "kind": head["kind"], "speaker": head["speaker"], "needs": head["needs"],
-                          "with_music": any(r["with_music"] for r in parts), "music": head["music"],
                           "music_part": head["music_part"], "sfx": next((r["sfx"] for r in parts if r["sfx"]), ""),
                           "parts": [{"id": r["id"], "shot": r["shot"], "kind": r["kind"]} for r in parts]})
 
@@ -328,10 +310,8 @@ def load(job: Job) -> Optional[Dict[str, Any]]:
 def sound_tags(unit: Dict[str, Any], before: str = " | ", after: str = "") -> str:
     """What is heard in a unit besides its words, as short text ("" when there is nothing to say)."""
     tags = []
-    if unit.get("music", "none") != "none":
-        tags.append(f"music: {unit['music']}/{unit.get('music_part', 'none')}")
-    if unit.get("with_music"):
-        tags.append("timed to the music")
+    if unit.get("music_part", "none") != "none":
+        tags.append(f"music: {unit['music_part']}")
     if unit.get("sfx"):
         tags.append(f"sound: {unit['sfx']}")
     return "".join(f"{before}{t}{after}" for t in tags)

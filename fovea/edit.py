@@ -42,13 +42,12 @@ THE CUT
 - Cut whole beats, not single words. Keep a sentence complete, and prefer runs of neighbouring units to
   many small pieces: every gap between kept units is a cut that is seen and heard.
 - A unit, or its shot, can list what it "needs": keep those too, or drop the unit.
-- MUSIC. A unit marked "music: song/peak" has that kind of music under it, in that part of the track. The
+- MUSIC. A unit marked "music: peak" has music under it, in that part of the track. The
   music is cut together with everything else, so every gap between kept units is also a jump in the music.
   Put your cuts where it survives them: where there is no music, or exactly where one part of the track ends
   and the next begins (jumping from the end of a build to the start of the peak works; leaving the middle of
   a part is heard as a stumble). If you keep a build, keep the peak it leads to.
-- A sung line, and any unit marked "timed to the music", is kept whole or dropped whole, together with the
-  units of the same line next to it.
+- A sung line is kept whole or dropped whole, together with the units of the same line next to it.
 - A unit marked "sound:" holds a sound made by something seen. Keep it with the action it belongs to.
 - Silence and music between lines are where time is saved most cheaply, but a reaction or a pause that a
   joke depends on is part of that joke.
@@ -174,9 +173,9 @@ def clean(raw: Dict[str, Any], audio: List[AudioUnit], described: Dict[str, Any]
                 issues.append(f"{uid} needs {n}: added")
                 keep.append(n)
                 todo.append(n)
-    # ---- a sung line, or words timed to the music, is one piece: all of it or none of it
+    # ---- a sung line is one piece: all of it or none of it
     sound = {u["id"]: u for u in described["audio_units"]}
-    locked = [sound[a.id]["kind"] == "lyrics" or bool(sound[a.id].get("with_music")) for a in audio]
+    locked = [sound[a.id]["kind"].startswith("lyrics") for a in audio]
     for uid in list(keep):
         lo = hi = order[uid]
         if not locked[lo]:
@@ -199,7 +198,7 @@ def clean(raw: Dict[str, Any], audio: List[AudioUnit], described: Dict[str, Any]
         if j == i + 1:
             continue
         part = lambda k: sound[audio[k].id].get("music_part", "none")                        # noqa: E731
-        if "none" in (sound[x].get("music", "none"), sound[y].get("music", "none")):
+        if "none" in (part(i), part(j)):
             verdict = "no music"                         # nothing to break on at least one side
         elif part(i + 1) != part(i) and part(j - 1) != part(j):
             verdict = "between music parts"              # leaves at the end of a part, lands at the start of one

@@ -26,14 +26,9 @@ class Kind(str, Enum):
     dialogue_onscreen = "dialogue_onscreen"
     dialogue_offscreen = "dialogue_offscreen"
     voiceover = "voiceover"
-    lyrics = "lyrics"
+    lyrics_onscreen = "lyrics_onscreen"
+    lyrics_offscreen = "lyrics_offscreen"
     other = "other"
-
-
-class Music(str, Enum):
-    none = "none"
-    score = "score"
-    song = "song"
 
 
 class MusicPart(str, Enum):
@@ -52,27 +47,20 @@ class AudioUnit(BaseModel):
     heard: str = Field(description="What is REALLY heard: speech written out in its own language and script, "
                                    "correcting the rough transcript; any other sound in round brackets, e.g. "
                                    "'(laughs)', '(music)', '(silence)'. '' for a unit marked (continued).")
-    kind: Kind = Field(description="dialogue_onscreen: spoken by someone whose mouth is SEEN saying it in this "
-                                   "stretch. dialogue_offscreen: spoken by someone in the scene who is not seen "
-                                   "saying it (out of frame, back to the camera, or the picture shows something "
-                                   "else). voiceover: a narrator. lyrics: sung words that are part of the music. "
-                                   "other: music, effects, a breath, a laugh, silence.")
+    kind: Kind = Field(description="Whose words these are. dialogue_onscreen: said by someone whose mouth is SEEN "
+                                   "saying it. dialogue_offscreen: said by someone in the scene who is not seen "
+                                   "saying it. voiceover: a narrator. lyrics_onscreen: sung by someone SEEN "
+                                   "singing it. lyrics_offscreen: sung words that only belong to the music. "
+                                   "other: no words.")
     speaker: str = Field(description="Cast id of who says it, decided for this unit on its own: by whose mouth "
                                      "moves, or by the voice when no mouth is seen. '' when nothing is spoken or "
                                      "the voice is not a cast member.")
-    with_music: bool = Field(description="True ONLY when these words cannot be moved apart from the music: they "
-                                          "are sung or lip-synced by someone seen, or deliberately timed to its "
-                                          "beat. False for ordinary speech with music under it, and when nothing "
-                                          "is said.")
-    music: Music = Field(description="The music under this stretch. none: no music. score: instrumental music. "
-                                     "song: a track with singing, also in the stretches between its sung lines.")
-    music_part: MusicPart = Field(description="Which part of the track this stretch belongs to. intro: it starts "
-                                              "up. build: tension or energy rises. peak: the high point (a chorus, "
-                                              "a drop, the payoff). break: it thins out or pauses. outro: it winds "
-                                              "down or ends. none when there is no music. Neighbouring units in "
-                                              "the same part get the same value.")
-    sfx: str = Field(description="A sound made by something that is SEEN in this stretch, in a few words: 'wrapper "
-                                 "torn', 'door slams', 'bottle opens'. Not music, not a voice. '' if there is none.")
+    music_part: MusicPart = Field(description="The part of the music track under this stretch, also when someone "
+                                              "speaks over it. intro: it starts up. build: energy rises. peak: the "
+                                              "high point (chorus, drop, payoff). break: it thins out or pauses. "
+                                              "outro: it winds down. none: no music plays.")
+    sfx: str = Field(description="A sound made by something SEEN in this stretch, in a few words ('wrapper torn', "
+                                 "'door slams'). Not music, not a voice. '' if none.")
     focus_x: int = Field(description="Centre of the cropped picture during this stretch, as a percentage of the "
                                      "frame width (0 = left edge, 100 = right edge): the centre of ONE person or "
                                      "thing, never the space between two. In order of priority: 1) the action or "
